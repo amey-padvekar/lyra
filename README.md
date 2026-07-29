@@ -68,6 +68,27 @@ Check that the toolchain is available:
 rustc --version && cargo --version
 ```
 
+### Release build, step by step
+
+1. Open PowerShell in the project root.
+2. Make sure Rust is installed and available on `PATH`.
+3. If you want a binary that does not depend on the Visual C++ redistributable, set static CRT before building:
+
+```powershell
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+```
+
+4. Build the release binary:
+
+```sh
+cargo build --release
+```
+
+5. Wait for the build to finish. The executable will be created at `target/release/lyra.exe`.
+6. Run the binary from `target/release/lyra.exe` or copy it somewhere else for distribution.
+
+If you do not need a fully portable binary, you can skip step 3 and run only step 4.
+
 ### Development build
 
 ```sh
@@ -76,14 +97,6 @@ cargo test
 cargo check
 cargo clippy
 ```
-
-### Release build
-
-```sh
-cargo build --release
-```
-
-The release binary is written to target/release/lyra.exe.
 
 ### Notes
 
