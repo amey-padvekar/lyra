@@ -118,6 +118,9 @@ mod tests {
             is_playing,
             position_ms,
             received_at,
+            can_play_pause: true,
+            can_next: true,
+            can_previous: true,
         }
     }
 

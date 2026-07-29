@@ -6,6 +6,13 @@ pub struct NowPlaying {
     pub is_playing: bool,
     pub position_ms: u64,
     pub received_at: std::time::Instant,
+    /// What the source says it will actually honour. Not every player supports
+    /// every transport command — browsers only expose next/previous when the
+    /// page registers media-session handlers — so the UI greys out what would
+    /// otherwise be buttons that silently do nothing.
+    pub can_play_pause: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
 }
 
 impl NowPlaying {

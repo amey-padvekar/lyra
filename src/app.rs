@@ -9,7 +9,7 @@ use crate::hotkey::HotkeyManager;
 use crate::lyrics::cache::LyricsCache;
 use crate::lyrics::fetcher::LyricsFetcher;
 use crate::lyrics::LyricLine;
-use crate::media::{MediaReader, PlatformReader};
+use crate::media::{MediaCommand, MediaReader, PlatformReader};
 use crate::overlay::OverlayWindow;
 use crate::sync::engine::SyncEngine;
 
@@ -17,6 +17,8 @@ use crate::sync::engine::SyncEngine;
 /// incoming line starts fading in — kept equal to `main.slint`'s `animate
 /// opacity` duration so the swap lands exactly at the invisible trough.
 const LINE_FADE_MS: u64 = 150;
+
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 type TrackId = (String, String, u64);
 
@@ -39,9 +41,13 @@ fn format_mmss(ms: u64) -> String {
 
 pub fn run() {
     let (np_tx, np_rx) = mpsc::channel::<NowPlaying>();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<MediaCommand>();
     let (lyrics_req_tx, lyrics_req_rx) = mpsc::channel::<TrackId>();
     let (lyrics_res_tx, lyrics_res_rx) = mpsc::channel::<(TrackId, Vec<LyricLine>)>();
 
+    // Transport commands run on this same thread rather than the UI thread:
+    // the GSMTC handles are `!Send`, so they can't cross threads, and issuing
+    // one blocks on a WinRT round-trip that would stutter the card.
     thread::spawn(move || {
         let mut reader = PlatformReader;
         loop {
@@ -54,7 +60,20 @@ pub fn run() {
                 Ok(None) => {}
                 Err(e) => eprintln!("media poll error: {e}"),
             }
-            thread::sleep(Duration::from_secs(1));
+
+            // Doubles as the poll interval, but returns the instant a command
+            // arrives — so a button press acts immediately instead of waiting
+            // out the rest of the tick, and the poll right after it refreshes
+            // the card with the result.
+            match cmd_rx.recv_timeout(POLL_INTERVAL) {
+                Ok(command) => {
+                    if let Err(e) = reader.execute(command) {
+                        eprintln!("media command {command:?} failed: {e}");
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
         }
     });
 
@@ -111,6 +130,12 @@ pub fn run() {
     };
     let weak = overlay.as_weak();
 
+    overlay.on_media_command(move |command| {
+        if cmd_tx.send(command).is_err() {
+            eprintln!("media thread is gone, dropping {command:?}");
+        }
+    });
+
     // Must be created on this (the UI event loop's) thread: it creates a
     // hidden window that only receives WM_HOTKEY messages while this thread's
     // message loop is being pumped, which starts below via `overlay.run()`.
@@ -164,6 +189,15 @@ pub fn run() {
                     let _ = lyrics_req_tx.send(track_id.clone());
                     current_track = Some(track_id);
                 }
+
+                // Refreshed every poll, not just on track change: play state
+                // and which transports the source honours can both change
+                // mid-track.
+                ui.set_is_playing(np.is_playing);
+                ui.set_can_play_pause(np.can_play_pause);
+                ui.set_can_next(np.can_next);
+                ui.set_can_previous(np.can_previous);
+
                 engine.on_poll(np);
             }
 

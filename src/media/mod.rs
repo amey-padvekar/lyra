@@ -5,8 +5,21 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+/// A transport command sent *to* the active media session.
+#[derive(Clone, Copy, Debug)]
+pub enum MediaCommand {
+    TogglePlayPause,
+    Next,
+    Previous,
+}
+
 pub trait MediaReader: Send {
     fn poll(&mut self) -> anyhow::Result<Option<crate::domain::NowPlaying>>;
+
+    /// Best-effort: a source may legitimately refuse a command, which is not
+    /// an error here. `Err` is reserved for actually failing to talk to the
+    /// platform's media API.
+    fn execute(&mut self, command: MediaCommand) -> anyhow::Result<()>;
 }
 
 #[cfg(target_os = "windows")]

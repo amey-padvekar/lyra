@@ -1,6 +1,9 @@
+use std::rc::Rc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cache::AppCache;
+use crate::media::MediaCommand;
 
 slint::include_modules!();
 
@@ -40,6 +43,24 @@ impl OverlayWindow {
 
     pub fn as_weak(&self) -> slint::Weak<MainWindow> {
         self.window.as_weak()
+    }
+
+    /// Routes all three transport buttons through one handler. `Rc` rather
+    /// than cloning the closure: Slint callbacks each need their own owner,
+    /// and these all run on the UI thread so no synchronisation is needed.
+    pub fn on_media_command(&self, handler: impl Fn(MediaCommand) + 'static) {
+        let handler = Rc::new(handler);
+
+        let toggle = handler.clone();
+        self.window
+            .on_toggle_play_pause(move || toggle(MediaCommand::TogglePlayPause));
+
+        let next = handler.clone();
+        self.window.on_skip_next(move || next(MediaCommand::Next));
+
+        let previous = handler.clone();
+        self.window
+            .on_skip_previous(move || previous(MediaCommand::Previous));
     }
 
     /// Not `self.window.run()` — that convenience method is `show()` +

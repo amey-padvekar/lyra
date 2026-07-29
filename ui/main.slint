@@ -1,6 +1,40 @@
+// A circular, hover-highlighted icon button. Children are slotted in centred,
+// so each call site only supplies the glyph itself.
+component ControlButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: touch.has-hover && root.enabled ? rgba(255, 255, 255, 0.10) : transparent;
+    opacity: root.enabled ? 1.0 : 0.28;
+
+    animate background {
+        duration: 120ms;
+        easing: ease-out;
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     width: 420px;
-    height: 220px;
+    height: 264px;
     title: "Lyra";
     always-on-top: true;
     no-frame: true;
@@ -19,8 +53,26 @@ export component MainWindow inherits Window {
     // Driven from Rust: dipped to 0 then back to 1 around a line change, so
     // the transition crossfades instead of snapping.
     in property <float> line-opacity: 1.0;
+    in property <bool> is-playing;
+    in property <bool> can-play-pause;
+    in property <bool> can-next;
+    in property <bool> can-previous;
 
     callback drag-window(length, length);
+    callback toggle-play-pause();
+    callback skip-next();
+    callback skip-previous();
+
+    // Declared before `card` so it sits *below* it. The control buttons'
+    // TouchAreas then take input priority, while clicks anywhere inert
+    // (text, background) fall through to here and drag the window.
+    drag-area := TouchArea {
+        moved => {
+            if (drag-area.pressed) {
+                root.drag-window(drag-area.mouse-x - drag-area.pressed-x, drag-area.mouse-y - drag-area.pressed-y);
+            }
+        }
+    }
 
     card := Rectangle {
         width: 100%;
@@ -93,13 +145,74 @@ export component MainWindow inherits Window {
                     font-size: 11px;
                 }
             }
-        }
-    }
 
-    drag-area := TouchArea {
-        moved => {
-            if (drag-area.pressed) {
-                root.drag-window(drag-area.mouse-x - drag-area.pressed-x, drag-area.mouse-y - drag-area.pressed-y);
+            HorizontalLayout {
+                alignment: center;
+                spacing: 12px;
+
+                ControlButton {
+                    enabled: can-previous;
+                    clicked => {
+                        root.skip-previous();
+                    }
+                    // Left-pointing triangle against a bar.
+                    Path {
+                        width: 15px;
+                        height: 15px;
+                        viewbox-width: 100;
+                        viewbox-height: 100;
+                        commands: "M 80 18 L 38 50 L 80 82 Z M 20 18 L 32 18 L 32 82 L 20 82 Z";
+                        fill: #e8e8ec;
+                    }
+                }
+
+                ControlButton {
+                    enabled: can-play-pause;
+                    clicked => {
+                        root.toggle-play-pause();
+                    }
+                    // `if` rather than `visible`, so the hidden glyph is out of
+                    // the tree entirely and can't skew the centring.
+                    if !is-playing: Path {
+                        width: 16px;
+                        height: 16px;
+                        viewbox-width: 100;
+                        viewbox-height: 100;
+                        commands: "M 26 14 L 84 50 L 26 86 Z";
+                        fill: #f5f5f7;
+                    }
+                    if is-playing: HorizontalLayout {
+                        spacing: 5px;
+                        Rectangle {
+                            width: 5px;
+                            height: 16px;
+                            border-radius: 1.5px;
+                            background: #f5f5f7;
+                        }
+                        Rectangle {
+                            width: 5px;
+                            height: 16px;
+                            border-radius: 1.5px;
+                            background: #f5f5f7;
+                        }
+                    }
+                }
+
+                ControlButton {
+                    enabled: can-next;
+                    clicked => {
+                        root.skip-next();
+                    }
+                    // Right-pointing triangle against a bar.
+                    Path {
+                        width: 15px;
+                        height: 15px;
+                        viewbox-width: 100;
+                        viewbox-height: 100;
+                        commands: "M 20 18 L 62 50 L 20 82 Z M 68 18 L 80 18 L 80 82 L 68 82 Z";
+                        fill: #e8e8ec;
+                    }
+                }
             }
         }
     }

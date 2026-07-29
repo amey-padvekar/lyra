@@ -9,7 +9,7 @@ use windows::Media::Control::{
 use windows_future::{AsyncStatus, IAsyncOperation};
 
 use crate::domain::NowPlaying;
-use crate::media::MediaReader;
+use crate::media::{MediaCommand, MediaReader};
 
 /// Zero-field marker: the GSMTC COM handles it touches are `!Send` (no explicit
 /// `Send`/`Sync` impl for the generated interface wrapper types), so nothing from
@@ -35,6 +35,8 @@ impl MediaReader for GsmtcReader {
         let is_playing = playback_info.PlaybackStatus()? == PlaybackStatus::Playing;
         let received_at = filetime_to_instant(timeline.LastUpdatedTime()?.UniversalTime);
 
+        let controls = playback_info.Controls()?;
+
         Ok(Some(NowPlaying {
             title: props.Title()?.to_string(),
             artist: props.Artist()?.to_string(),
@@ -42,7 +44,31 @@ impl MediaReader for GsmtcReader {
             is_playing,
             position_ms,
             received_at,
+            // Either flag is enough: which one the source reports depends on
+            // its current state, but both map to the same toggle button.
+            can_play_pause: controls.IsPlayEnabled()? || controls.IsPauseEnabled()?,
+            can_next: controls.IsNextEnabled()?,
+            can_previous: controls.IsPreviousEnabled()?,
         }))
+    }
+
+    fn execute(&mut self, command: MediaCommand) -> anyhow::Result<()> {
+        let manager = wait(SessionManager::RequestAsync()?)?;
+
+        let session = match manager.GetCurrentSession() {
+            Ok(session) => session,
+            Err(_) => return Ok(()),
+        };
+
+        let accepted = match command {
+            MediaCommand::TogglePlayPause => wait(session.TryTogglePlayPauseAsync()?)?,
+            MediaCommand::Next => wait(session.TrySkipNextAsync()?)?,
+            MediaCommand::Previous => wait(session.TrySkipPreviousAsync()?)?,
+        };
+        if !accepted {
+            eprintln!("media: source declined {command:?}");
+        }
+        Ok(())
     }
 }
 
