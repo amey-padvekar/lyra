@@ -1,164 +1,114 @@
 # Lyra
 
-A native, always-on-top overlay that shows whatever is currently playing on your
-machine — with time-synced lyrics that advance line by line.
+Lyra is a native Windows overlay that shows the currently playing media and
+syncs a lyric line with playback in real time. It reads the system media session,
+so it works with browsers, desktop players, and other apps that expose transport
+controls.
 
-Not a browser extension. Lyra reads the OS-level media session, so it works with
-whatever is actually playing: a browser tab, a desktop player, anything that
-registers with the system transport controls.
+## What it does
 
-```
-┌──────────────────────────────────────────┐
-│              Song Title                  │
-│                Artist                    │
-│                                          │
-│      the current lyric line, in sync     │
-│                                          │
-│  ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░  │
-│  1:47                              3:24  │
-│              ⏮   ⏸   ⏭                   │
-└──────────────────────────────────────────┘
-```
+Lyra watches the active media session, keeps a small always-on-top card in sync
+with playback, and gives you a simple way to control the current source. When a
+track changes, it fetches lyrics, uses cached results when available, and updates
+what is shown on the overlay without blocking the UI.
 
-## Status
+## Current status
 
-Early, but functional end to end. **Windows only** right now.
+Lyra is still an early-stage project, but the core pieces are already wired up in
+this codebase:
 
-The original spec (`lyra.md`) targeted Linux/MPRIS first; that got pivoted to
-Windows/GSMTC because `mpris` needs D-Bus and pkg-config, which don't exist on
-the development machine. The `MediaReader` trait boundary is designed for all
-three platforms, but `src/media/linux.rs` and `src/media/macos.rs` are still
-empty stubs — they compile, they don't do anything.
+- a Slint-based overlay window
+- Windows media polling through GSMTC
+- transport controls for play/pause, previous, and next when the source supports them
+- lyric lookup through LRCLIB with a fallback to lyrics.ovh
+- local disk caching for lyrics
+- a global hotkey to show or hide the overlay
+- a tray menu for show/hide and quit actions
+
+The remaining work is mostly around polish, packaging, and expanding platform
+support. Linux and macOS media backends are still not implemented.
 
 ## Features
 
-- **Now playing** — title and artist from the system media session
-- **Synced lyrics** — the active line, interpolated between polls so it advances
-  smoothly rather than jumping once a second
-- **Seek bar** — progress plus elapsed / total time
-- **Media controls** — previous, play/pause, next. Buttons grey out when the
-  source says it won't honour them
-- **Global hotkey** — `Ctrl+Shift+L` shows/hides the card from anywhere,
-  regardless of focus
-- **Frameless, always-on-top, translucent card** — draggable, and it remembers
-  where you left it
-
-## Requirements
-
-- Windows 10/11
-- Rust (edition 2024 — needs a reasonably current toolchain)
-
-## Build and run
-
-```sh
-cargo run          # build and launch
-cargo build --release
-cargo test         # unit tests (sync engine + LRC parser)
-cargo check        # fast type-check
-cargo clippy       # lint
-```
-
-First build pulls in Slint's rendering stack and the `windows` crate, so expect
-it to take a while and want a few GB of disk.
-
-## Usage
-
-Launch it and it picks up whatever is playing. Drag the card anywhere; the
-position is saved. `Ctrl+Shift+L` toggles visibility.
-
-**To quit, kill the process** — there's no close button or quit hotkey yet (see
-Limitations).
+- Show the current track title, artist, and lyric line in a compact overlay
+- Keep the lyric line moving smoothly as playback progresses
+- Display elapsed and total time with a progress indicator
+- Send previous, play/pause, and next commands when the source supports them
+- Fetch lyrics from LRCLIB and fall back to lyrics.ovh when needed
+- Cache lyrics locally so repeated lookups are faster
+- Keep the overlay above other windows and remember its last position and size
+- Toggle the overlay from anywhere with Ctrl+Shift+L
+- Show or hide the app and quit it from the system tray
 
 ## How it works
 
-```
-media reader (trait) ──▶ sync engine ──▶ Slint UI (card)
-        ▲                    ▲
-        │                    │
-   transport            lyrics fetcher
-   commands             (LRCLIB → lyrics.ovh, disk-cached)
+1. A media reader polls the current session and publishes the latest state.
+2. A sync engine estimates the current playback position and chooses the active lyric line.
+3. A background lyrics worker loads cached lyrics or fetches new ones from LRCLIB or lyrics.ovh.
+4. The Slint UI updates the overlay with track info, lyrics, progress, and transport controls.
 
-   global hotkey ─────────▶ show / hide
-```
+The main pieces of the project are organized around these areas:
 
-Three threads:
+- src/media for platform-specific media readers
+- src/sync for playback and lyric synchronization logic
+- src/lyrics for fetching, parsing, and caching lyrics
+- src/overlay for the card UI and window behavior
 
-- **Media thread** polls the session once a second and pushes `NowPlaying` over
-  a channel. It also executes transport commands, because the underlying COM
-  handles are `!Send` and can't be touched from anywhere else. Its wait is a
-  `recv_timeout`, so a button press acts immediately instead of waiting out the
-  poll interval.
-- **Lyrics thread** does the blocking HTTP lookups. Kept off the UI thread so a
-  fetch on track change can't stutter the card.
-- **UI thread** owns the Slint event loop and runs a 66ms timer that drains both
-  channels and repaints.
+## Building on Windows
 
-The interesting piece is `src/sync/engine.rs` — it's pure, no I/O, and unit
-tested. It interpolates position between polls, snaps on a seek, eases small
-drift rather than jerking, and freezes while paused.
+### Prerequisites
 
-Two non-obvious things it gets right, both of which caused real bugs:
+- Windows 10 or 11
+- a Rust 2024-capable toolchain from rustup
+- Visual Studio Build Tools with the Desktop development with C++ workload
 
-- Track identity is `(title, artist)` **without** duration. Some sources report
-  a duration that jitters by a few milliseconds between polls, which otherwise
-  reads as a new track on every single poll.
-- Position is anchored to the session's own `LastUpdatedTime`, not to when we
-  happened to poll. `Position()` is only accurate as of that timestamp, and
-  using poll time makes interpolation drift against real playback.
-
-## Lyrics
-
-1. **[LRCLIB](https://lrclib.net)** — free, no API key, and the only good source
-   of *timestamped* lyrics. Matched on title + artist + duration.
-2. **[lyrics.ovh](https://lyrics.ovh)** — fallback when LRCLIB has no match.
-   Plain text only, so it renders as a static block with no line syncing.
-
-Results are cached to disk before any network call, keyed by a hash of
-`(title, artist, duration)` — hashed rather than using the names directly
-because Windows forbids `/ : ? * " < > |` in filenames and real track titles
-contain them.
-
-Cache lives in `%LOCALAPPDATA%\lyra\lyra\cache\`, alongside the saved window
-position. Deleting it is safe.
-
-## Limitations
-
-- **Windows only.** Linux and macOS readers are unimplemented stubs.
-- **No clean quit.** Frameless window, no tray icon, no quit hotkey — you have
-  to kill the process.
-- **Not click-through.** `lyra.md` wanted it; Slint 1.x doesn't expose winit's
-  `set_cursor_hittest`, and full click-through would conflict with the drag and
-  button handling anyway.
-- **Skip has visible lag.** Some sources take ~2 seconds to republish metadata
-  after a track change, so the card trails briefly. That's the source, not Lyra.
-- **Lyrics coverage isn't complete.** Plenty of tracks have no synced lyrics
-  anywhere; regional and independent releases especially.
-- **No settings.** Font, size, opacity, and offset nudging are all hardcoded.
-
-## Development
-
-Unit tests cover the sync engine and LRC parser:
+Check that the toolchain is available:
 
 ```sh
-cargo test -p lyra --lib
+rustc --version && cargo --version
 ```
 
-`examples/` holds throwaway probes used to verify each piece against live state
-— useful when something breaks and you want to isolate which layer:
+### Development build
 
 ```sh
-cargo run --example gsmtc_probe          # what the media session reports
-cargo run --example media_control_probe  # transport commands (controls playback)
-cargo run --example lrclib_probe         # lyrics lookup + fallback
-cargo run --example lyrics_ovh_probe     # the plain-text fallback on its own
-cargo run --example lyrics_cache_probe   # disk cache round-trip
+cargo run
+cargo test
+cargo check
+cargo clippy
 ```
 
-Further docs: `lyra.md` is the original design spec and the reasoning behind
-each dependency choice; `IMPLEMENTATION_PLAN.md` is the concrete build order
-that was actually followed.
+### Release build
+
+```sh
+cargo build --release
+```
+
+The release binary is written to target/release/lyra.exe.
+
+### Notes
+
+- The first build can take a while because it compiles the Slint stack and the Windows crates.
+- If you hit memory issues during the build, try:
+
+```sh
+cargo build -j 1
+```
+
+- A stale target directory can also cause build problems; cargo clean is a good fallback if you see crate artifact issues.
+
+## Usage
+
+Launch the app and it will begin tracking whatever is playing. Drag the card to
+move it, resize it from any edge, and use the tray menu or Ctrl+Shift+L to show
+or hide it.
+
+## Logs and debugging
+
+The app writes logs to the local app data directory for Lyra, which is the best
+place to look when something goes wrong. The logs are especially useful for
+reporting bugs because release builds do not keep a console open.
 
 ## Legal
 
-Lyrics are copyrighted, and LRCLIB is a community-run gray area. This is a
-personal project — keep it personal, don't commercialize it.
+Lyrics are copyrighted, and LRCLIB is a community-run service with a gray legal
+status. This project is intended for personal use only.

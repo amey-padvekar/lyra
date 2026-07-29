@@ -12,6 +12,7 @@ use crate::lyrics::LyricLine;
 use crate::media::{MediaCommand, MediaReader, PlatformReader};
 use crate::overlay::OverlayWindow;
 use crate::sync::engine::SyncEngine;
+use crate::tray::{Tray, TrayCommand};
 
 /// How long the outgoing line's fade-out takes before the text swaps and the
 /// incoming line starts fading in — kept equal to `main.slint`'s `animate
@@ -58,7 +59,7 @@ pub fn run() {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => eprintln!("media poll error: {e}"),
+                Err(e) => crate::log!("media poll error: {e}"),
             }
 
             // Doubles as the poll interval, but returns the instant a command
@@ -68,7 +69,7 @@ pub fn run() {
             match cmd_rx.recv_timeout(POLL_INTERVAL) {
                 Ok(command) => {
                     if let Err(e) = reader.execute(command) {
-                        eprintln!("media command {command:?} failed: {e}");
+                        crate::log!("media command {command:?} failed: {e}");
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -84,7 +85,7 @@ pub fn run() {
         let cache = match LyricsCache::new() {
             Ok(cache) => cache,
             Err(e) => {
-                eprintln!("could not open lyrics cache: {e}");
+                crate::log!("could not open lyrics cache: {e}");
                 return;
             }
         };
@@ -92,7 +93,7 @@ pub fn run() {
         for (title, artist, duration_ms) in lyrics_req_rx {
             let lines = match cache.get(&title, &artist, duration_ms) {
                 Some(lines) => {
-                    eprintln!(
+                    crate::log!(
                         "lyrics: cache hit for {title} - {artist}: {} lines",
                         lines.len()
                     );
@@ -100,17 +101,17 @@ pub fn run() {
                 }
                 None => match LyricsFetcher::fetch(&title, &artist, duration_ms) {
                     Ok(lines) => {
-                        eprintln!(
+                        crate::log!(
                             "lyrics: fetched {title} - {artist} ({duration_ms}ms): {} lines",
                             lines.len()
                         );
                         if let Err(e) = cache.set(&title, &artist, duration_ms, &lines) {
-                            eprintln!("could not cache lyrics: {e}");
+                            crate::log!("could not cache lyrics: {e}");
                         }
                         lines
                     }
                     Err(e) => {
-                        eprintln!("lyrics: fetch failed for {title} - {artist}: {e}");
+                        crate::log!("lyrics: fetch failed for {title} - {artist}: {e}");
                         Vec::new()
                     }
                 },
@@ -124,7 +125,7 @@ pub fn run() {
     let overlay = match OverlayWindow::new() {
         Ok(overlay) => overlay,
         Err(e) => {
-            eprintln!("could not create overlay window: {e}");
+            crate::log!("could not create overlay window: {e}");
             return;
         }
     };
@@ -132,7 +133,7 @@ pub fn run() {
 
     overlay.on_media_command(move |command| {
         if cmd_tx.send(command).is_err() {
-            eprintln!("media thread is gone, dropping {command:?}");
+            crate::log!("media thread is gone, dropping {command:?}");
         }
     });
 
@@ -142,7 +143,19 @@ pub fn run() {
     let hotkeys = match HotkeyManager::new() {
         Ok(hotkeys) => Some(hotkeys),
         Err(e) => {
-            eprintln!("could not register global hotkey, toggle disabled: {e}");
+            crate::log!("could not register global hotkey, toggle disabled: {e}");
+            None
+        }
+    };
+
+    // Same thread requirement as the hotkey manager, and the same
+    // must-stay-alive caveat: dropping it removes the icon from the tray.
+    // This is the only way to quit, so failing to create it is worth shouting
+    // about.
+    let tray = match Tray::new() {
+        Ok(tray) => Some(tray),
+        Err(e) => {
+            crate::log!("could not create tray icon — no way to quit from the UI: {e}");
             None
         }
     };
@@ -160,7 +173,18 @@ pub fn run() {
                 return;
             };
 
-            if hotkeys.as_ref().is_some_and(HotkeyManager::poll_toggle) {
+            let tray_command = tray.as_ref().and_then(Tray::poll);
+            if matches!(tray_command, Some(TrayCommand::Quit)) {
+                crate::log!("quit requested from tray");
+                // Ends `run_event_loop_until_quit()`, so `run()` returns and
+                // the process exits normally.
+                slint::quit_event_loop().ok();
+                return;
+            }
+
+            let toggle_requested = hotkeys.as_ref().is_some_and(HotkeyManager::poll_toggle)
+                || matches!(tray_command, Some(TrayCommand::ToggleVisibility));
+            if toggle_requested {
                 let window = ui.window();
                 let toggled = if window.is_visible() {
                     window.hide()
@@ -168,7 +192,7 @@ pub fn run() {
                     window.show()
                 };
                 if let Err(e) = toggled {
-                    eprintln!("could not toggle overlay visibility: {e}");
+                    crate::log!("could not toggle overlay visibility: {e}");
                 }
             }
 
@@ -179,7 +203,7 @@ pub fn run() {
                     None => true,
                 };
                 if changed {
-                    eprintln!(
+                    crate::log!(
                         "track changed: {} - {} ({}ms)",
                         track_id.0, track_id.1, track_id.2
                     );
@@ -204,11 +228,11 @@ pub fn run() {
             while let Ok((track_id, lines)) = lyrics_res_rx.try_recv() {
                 match &current_track {
                     Some(current) if same_track(current, &track_id) => {
-                        eprintln!("lyrics: applying {} lines to engine", lines.len());
+                        crate::log!("lyrics: applying {} lines to engine", lines.len());
                         engine.set_lyrics(lines);
                     }
                     _ => {
-                        eprintln!(
+                        crate::log!(
                             "lyrics: discarding stale response for {} - {}",
                             track_id.0, track_id.1
                         );
@@ -250,6 +274,6 @@ pub fn run() {
     );
 
     if let Err(e) = overlay.run() {
-        eprintln!("overlay window error: {e}");
+        crate::log!("overlay window error: {e}");
     }
 }

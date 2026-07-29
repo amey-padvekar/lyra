@@ -70,6 +70,7 @@ export component MainWindow inherits Window {
     callback toggle-play-pause();
     callback skip-next();
     callback skip-previous();
+    callback hide-overlay();
 
     // Declared before `card` so it sits *below* it. The control buttons'
     // TouchAreas then take input priority, while clicks anywhere inert
@@ -223,6 +224,42 @@ export component MainWindow inherits Window {
                         commands: "M 20 18 L 62 50 L 20 82 Z M 68 18 L 80 18 L 80 82 L 68 82 Z";
                         fill: #e8e8ec;
                     }
+                }
+            }
+        }
+
+        // Declared after the layout so it draws on top and wins the click.
+        // Hides to the tray rather than quitting — the tray menu owns Quit.
+        close-button := Rectangle {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            background: close-touch.has-hover ? rgba(232, 76, 76, 0.90) : rgba(255, 255, 255, 0.05);
+
+            animate background {
+                duration: 120ms;
+                easing: ease-out;
+            }
+
+            Path {
+                width: 10px;
+                height: 10px;
+                // Viewbox matched 1:1 to the pixel size, so `stroke-width`
+                // means what it says instead of being scaled by the viewbox.
+                viewbox-width: 10;
+                viewbox-height: 10;
+                commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+                stroke: close-touch.has-hover ? #ffffff : #9a9aa5;
+                stroke-width: 1.5px;
+                stroke-line-cap: round;
+            }
+
+            close-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.hide-overlay();
                 }
             }
         }

@@ -66,7 +66,7 @@ impl MediaReader for GsmtcReader {
             MediaCommand::Previous => wait(session.TrySkipPreviousAsync()?)?,
         };
         if !accepted {
-            eprintln!("media: source declined {command:?}");
+            crate::log!("media: source declined {command:?}");
         }
         Ok(())
     }

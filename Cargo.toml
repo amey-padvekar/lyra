@@ -17,8 +17,18 @@ ureq = { version = "2", features = ["json"] }
 mpris = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Media_Control"] }
+windows = { version = "0.62", features = [
+    "Media_Control",
+    # Monitor geometry, so a window restored onto a since-disconnected display
+    # can be pulled back into view. Both are already enabled transitively by
+    # winit/muda, so declaring them costs no extra build time.
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+] }
 windows-future = "0.3"
+# `default-features = false` drops the gtk/libxdo features, which are Linux-only
+# and pull in dependencies this target has no use for.
+tray-icon = { version = "0.24", default-features = false }
 
 [build-dependencies]
 slint-build = "1"
@@ -31,3 +41,11 @@ slint-build = "1"
 # debug info, so stepping through this project's own code still works.
 [profile.dev.package."*"]
 debug = false
+
+[profile.release]
+# `thin` rather than `fat`: this machine already OOMs compiling the `windows`
+# crate, and fat LTO is far more memory-hungry for a modest extra gain.
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

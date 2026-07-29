@@ -9,7 +9,7 @@ impl LyricsFetcher {
         match Self::fetch_lrclib(title, artist, duration_ms) {
             Ok(lines) if !lines.is_empty() => return Ok(lines),
             Ok(_) => {}
-            Err(e) => eprintln!("lyrics: lrclib lookup failed for {title} - {artist}: {e}"),
+            Err(e) => crate::log!("lyrics: lrclib lookup failed for {title} - {artist}: {e}"),
         }
 
         Self::fetch_lyrics_ovh(title, artist)

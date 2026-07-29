@@ -9,6 +9,8 @@ use crate::media::MediaCommand;
 
 slint::include_modules!();
 
+mod screen;
+
 const GEOMETRY_CACHE_KEY: &str = "window_geometry.json";
 /// How often the geometry watcher samples the window.
 const GEOMETRY_POLL: Duration = Duration::from_millis(250);
@@ -48,6 +50,18 @@ impl OverlayWindow {
             window
                 .window()
                 .set_position(slint::LogicalPosition::new(current.x + dx, current.y + dy));
+        });
+
+        // Hides rather than quits: the tray icon keeps running and its
+        // Show / hide brings the card back. Quit lives on the tray menu.
+        let weak = window.as_weak();
+        window.on_hide_overlay(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            if let Err(e) = window.window().hide() {
+                crate::log!("could not hide overlay from close button: {e}");
+            }
         });
 
         // Position and size are persisted by this watcher rather than from the
@@ -105,6 +119,9 @@ impl OverlayWindow {
     /// does yet, so the window can be hidden and shown indefinitely).
     pub fn run(&self) -> Result<(), slint::PlatformError> {
         self.window.show()?;
+        // After `show()`, not before: the window has to be realised for its
+        // reported position to mean anything.
+        screen::ensure_on_screen(&self.window);
         slint::run_event_loop_until_quit()
     }
 }
