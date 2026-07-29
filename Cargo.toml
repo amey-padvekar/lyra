@@ -22,3 +22,12 @@ windows-future = "0.3"
 
 [build-dependencies]
 slint-build = "1"
+
+# Debug symbols for dependencies only, not our own code. The `windows` crate
+# generates an enormous amount of code, and compiling it with `debuginfo=2`
+# exhausts memory on machines without much RAM or pagefile headroom — rustc
+# dies with STATUS_STACK_BUFFER_OVERRUN mid-build. Dropping symbols for deps
+# fixes that and shrinks `target/` by several GB; `lyra` itself keeps full
+# debug info, so stepping through this project's own code still works.
+[profile.dev.package."*"]
+debug = false

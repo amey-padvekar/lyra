@@ -33,11 +33,19 @@ component ControlButton inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    width: 420px;
-    height: 264px;
+    // `preferred-*` rather than `width`/`height`: setting those pins min == max,
+    // which the winit backend reads as "not resizable".
+    preferred-width: 420px;
+    preferred-height: 264px;
+    min-width: 300px;
+    min-height: 200px;
     title: "Lyra";
     always-on-top: true;
     no-frame: true;
+    // A frameless window has no OS-drawn edge to grab, so carve out our own
+    // hit-test margin. Presses inside it are consumed by the backend before
+    // reaching the item tree, so this doesn't fight `drag-area` below.
+    resize-border-width: 6px;
     // Window itself stays fully transparent so `card` below can show through
     // with rounded corners — a squared `background` on Window would fill the
     // whole rectangular surface and clip off the rounding.
@@ -85,7 +93,6 @@ export component MainWindow inherits Window {
         VerticalLayout {
             padding: 20px;
             spacing: 8px;
-            alignment: center;
 
             Text {
                 text: track-title;
@@ -107,6 +114,10 @@ export component MainWindow inherits Window {
                 color: #e8e8ec;
                 font-size: 16px;
                 horizontal-alignment: center;
+                // Sole stretchy row, so growing the window gives the lyric the
+                // extra height instead of padding the gaps everywhere.
+                vertical-stretch: 1;
+                vertical-alignment: center;
                 wrap: word-wrap;
                 opacity: line-opacity;
                 animate opacity {
