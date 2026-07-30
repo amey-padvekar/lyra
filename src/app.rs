@@ -11,6 +11,8 @@ use crate::lyrics::fetcher::LyricsFetcher;
 use crate::lyrics::LyricLine;
 use crate::media::{MediaCommand, MediaReader, PlatformReader};
 use crate::overlay::OverlayWindow;
+#[cfg(target_os = "windows")]
+use crate::startup;
 use crate::sync::engine::SyncEngine;
 use crate::tray::{Tray, TrayCommand};
 
@@ -152,7 +154,15 @@ pub fn run() {
     // must-stay-alive caveat: dropping it removes the icon from the tray.
     // This is the only way to quit, so failing to create it is worth shouting
     // about.
-    let tray = match Tray::new() {
+    let startup_enabled = match startup::is_enabled() {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            crate::log!("could not read run-on-startup state, defaulting to off: {e}");
+            false
+        }
+    };
+
+    let tray = match Tray::new(startup_enabled) {
         Ok(tray) => Some(tray),
         Err(e) => {
             crate::log!("could not create tray icon — no way to quit from the UI: {e}");
@@ -180,6 +190,23 @@ pub fn run() {
                 // the process exits normally.
                 slint::quit_event_loop().ok();
                 return;
+            }
+
+            #[cfg(target_os = "windows")]
+            if matches!(tray_command, Some(TrayCommand::ToggleRunOnStartup)) {
+                match startup::toggle() {
+                    Ok(enabled) => {
+                        if let Some(tray) = tray.as_ref() {
+                            tray.set_startup_checked(enabled);
+                        }
+                        if enabled {
+                            crate::log!("run on startup enabled");
+                        } else {
+                            crate::log!("run on startup disabled");
+                        }
+                    }
+                    Err(e) => crate::log!("could not toggle run on startup: {e}"),
+                }
             }
 
             let toggle_requested = hotkeys.as_ref().is_some_and(HotkeyManager::poll_toggle)
@@ -210,6 +237,8 @@ pub fn run() {
                     engine.set_lyrics(Vec::new());
                     ui.set_track_title(np.title.clone().into());
                     ui.set_track_artist(np.artist.clone().into());
+                    // Artwork feed is not wired yet; keep placeholder visible.
+                    ui.set_has_album_cover(false);
                     let _ = lyrics_req_tx.send(track_id.clone());
                     current_track = Some(track_id);
                 }

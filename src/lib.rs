@@ -6,6 +6,8 @@ pub mod logging;
 pub mod lyrics;
 pub mod media;
 pub mod overlay;
+#[cfg(target_os = "windows")]
+pub mod startup;
 pub mod sync;
 #[cfg(target_os = "windows")]
 pub mod tray;

@@ -29,6 +29,7 @@ windows-future = "0.3"
 # `default-features = false` drops the gtk/libxdo features, which are Linux-only
 # and pull in dependencies this target has no use for.
 tray-icon = { version = "0.24", default-features = false }
+winreg = "0.52"
 
 [build-dependencies]
 slint-build = "1"

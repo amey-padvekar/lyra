@@ -56,6 +56,8 @@ export component MainWindow inherits Window {
     in property <string> current-line;
     in property <string> elapsed-label;
     in property <string> total-label;
+    in property <image> album-cover;
+    in property <bool> has-album-cover: false;
     // 0.0 - 1.0 fraction of the track that's played so far.
     in property <float> progress;
     // Driven from Rust: dipped to 0 then back to 1 around a line change, so
@@ -94,6 +96,39 @@ export component MainWindow inherits Window {
         VerticalLayout {
             padding: 20px;
             spacing: 8px;
+
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 76px;
+                    height: 76px;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: rgba(255, 255, 255, 0.16);
+                    background: rgba(255, 255, 255, 0.04);
+
+                    if has-album-cover: Image {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        source: album-cover;
+                    }
+
+                    if !has-album-cover: Path {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 28px;
+                        height: 28px;
+                        viewbox-width: 100;
+                        viewbox-height: 100;
+                        // Stylised music note as an album-art placeholder.
+                        commands: "M 64 16 L 64 58 C 60 54, 52 52, 45 52 C 33 52, 24 60, 24 71 C 24 82, 33 90, 45 90 C 58 90, 67 82, 67 71 L 67 36 L 84 31 L 84 66 C 80 62, 72 60, 65 60 C 53 60, 44 68, 44 79 C 44 90, 53 98, 65 98 C 78 98, 87 90, 87 79 L 87 16 Z";
+                        fill: rgba(245, 245, 247, 0.76);
+                    }
+                }
+            }
 
             Text {
                 text: track-title;

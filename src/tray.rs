@@ -4,15 +4,17 @@
 //! the event loop deliberately outlives a hidden window (see
 //! `OverlayWindow::run`). Without this, the only way out is Task Manager.
 
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 const SHOW_HIDE_ID: &str = "lyra.show-hide";
+const STARTUP_ID: &str = "lyra.startup";
 const QUIT_ID: &str = "lyra.quit";
 
 #[derive(Clone, Copy, Debug)]
 pub enum TrayCommand {
     ToggleVisibility,
+    ToggleRunOnStartup,
     Quit,
 }
 
@@ -20,16 +22,25 @@ pub struct Tray {
     /// Dropping the `TrayIcon` removes it from the notification area, so it
     /// has to outlive the event loop even though nothing reads it again.
     _icon: TrayIcon,
+    startup_item: CheckMenuItem,
 }
 
 impl Tray {
     /// Must be called on the thread that runs the UI event loop: the tray icon
     /// is backed by a window that only receives its messages while that
     /// thread's message loop is pumped.
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(startup_enabled: bool) -> anyhow::Result<Self> {
         let menu = Menu::new();
+        let startup_item = CheckMenuItem::with_id(
+            STARTUP_ID,
+            "Run on startup",
+            true,
+            startup_enabled,
+            None,
+        );
         menu.append_items(&[
             &MenuItem::with_id(SHOW_HIDE_ID, "Show / hide", true, None),
+            &startup_item,
             &MenuItem::with_id(QUIT_ID, "Quit Lyra", true, None),
         ])?;
 
@@ -39,7 +50,10 @@ impl Tray {
             .with_tooltip("Lyra")
             .build()?;
 
-        Ok(Self { _icon: icon })
+        Ok(Self {
+            _icon: icon,
+            startup_item,
+        })
     }
 
     /// Non-blocking; returns the last command seen this tick.
@@ -50,9 +64,15 @@ impl Tray {
                 command = Some(TrayCommand::Quit);
             } else if event.id == SHOW_HIDE_ID {
                 command = Some(TrayCommand::ToggleVisibility);
+            } else if event.id == STARTUP_ID {
+                command = Some(TrayCommand::ToggleRunOnStartup);
             }
         }
         command
+    }
+
+    pub fn set_startup_checked(&self, enabled: bool) {
+        self.startup_item.set_checked(enabled);
     }
 }
 
