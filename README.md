@@ -108,7 +108,13 @@ The app writes logs to the local app data directory for Lyra, which is the best
 place to look when something goes wrong. The logs are especially useful for
 reporting bugs because release builds do not keep a console open.
 
+## License
+
+Lyra's source code is released under the MIT License. See LICENSE for the full
+text.
+
 ## Legal
 
-Lyrics are copyrighted, and LRCLIB is a community-run service with a gray legal
-status. This project is intended for personal use only.
+The license above covers this project's code only. Lyra ships no lyrics data of
+its own — it queries LRCLIB, a community-run service, at runtime. Lyrics
+themselves are copyrighted and are not covered by this project's license.

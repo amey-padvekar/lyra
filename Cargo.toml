@@ -2,6 +2,10 @@
 name = "lyra"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "An always-on-top overlay that syncs lyrics to whatever is playing, via the system media session."
+repository = "https://github.com/amey-padvekar/lyra"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1"
