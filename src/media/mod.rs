@@ -2,6 +2,8 @@
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "macos")]
+mod mediaremote;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -22,5 +24,7 @@ pub trait MediaReader: Send {
     fn execute(&mut self, command: MediaCommand) -> anyhow::Result<()>;
 }
 
+#[cfg(target_os = "macos")]
+pub use macos::HybridReader as PlatformReader;
 #[cfg(target_os = "windows")]
 pub use windows::GsmtcReader as PlatformReader;

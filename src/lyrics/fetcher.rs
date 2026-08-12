@@ -6,10 +6,32 @@ pub struct LyricsFetcher;
 
 impl LyricsFetcher {
     pub fn fetch(title: &str, artist: &str, duration_ms: u64) -> anyhow::Result<Vec<LyricLine>> {
-        match Self::fetch_lrclib(title, artist, duration_ms) {
+        let title = title.trim();
+        let artist = artist.trim();
+        if title.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if !artist.is_empty() && duration_ms > 0 {
+            match Self::fetch_lrclib(title, artist, duration_ms) {
+                Ok(lines) if !lines.is_empty() => return Ok(lines),
+                Ok(_) => {}
+                Err(e) => crate::log!("lyrics: lrclib lookup failed for {title} - {artist}: {e}"),
+            }
+        } else {
+            crate::log!(
+                "lyrics: skipping lrclib lookup for {title} - {artist} (duration_ms={duration_ms})"
+            );
+        }
+
+        match Self::fetch_lrclib_search(title, artist) {
             Ok(lines) if !lines.is_empty() => return Ok(lines),
             Ok(_) => {}
-            Err(e) => crate::log!("lyrics: lrclib lookup failed for {title} - {artist}: {e}"),
+            Err(e) => crate::log!("lyrics: lrclib search failed for {title} - {artist}: {e}"),
+        }
+
+        if artist.is_empty() {
+            return Ok(Vec::new());
         }
 
         Self::fetch_lyrics_ovh(title, artist)
@@ -25,16 +47,39 @@ impl LyricsFetcher {
             .call()?
             .into_json()?;
 
-        if let Some(synced) = track.synced_lyrics.filter(|s| !s.is_empty()) {
-            return Ok(parser::parse_lrc(&synced));
+        Ok(track_to_lines(track.synced_lyrics, track.plain_lyrics))
+    }
+
+    fn fetch_lrclib_search(title: &str, artist: &str) -> anyhow::Result<Vec<LyricLine>> {
+        let request = ureq::get("https://lrclib.net/api/search").query("track_name", title);
+        let request = if artist.is_empty() {
+            request
+        } else {
+            request.query("artist_name", artist)
+        };
+        let response = match request.call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(404, _)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+
+        let tracks: Vec<LrclibSearchTrack> = response.into_json()?;
+        if tracks.is_empty() {
+            return Ok(Vec::new());
         }
-        if let Some(plain) = track.plain_lyrics.filter(|s| !s.is_empty()) {
-            return Ok(vec![LyricLine {
-                time_ms: 0,
-                text: plain,
-            }]);
-        }
-        Ok(Vec::new())
+
+        let selected = if artist.is_empty() {
+            &tracks[0]
+        } else {
+            tracks
+                .iter()
+                .find(|track| track.artist_name.eq_ignore_ascii_case(artist))
+                .unwrap_or(&tracks[0])
+        };
+        Ok(track_to_lines(
+            selected.synced_lyrics.clone(),
+            selected.plain_lyrics.clone(),
+        ))
     }
 
     /// Unsynced fallback for tracks LRCLIB doesn't have. lyrics.ovh only
@@ -92,4 +137,27 @@ struct LrclibTrack {
 #[derive(Deserialize)]
 struct LyricsOvhTrack {
     lyrics: String,
+}
+
+#[derive(Deserialize)]
+struct LrclibSearchTrack {
+    #[serde(rename = "artistName")]
+    artist_name: String,
+    #[serde(rename = "syncedLyrics")]
+    synced_lyrics: Option<String>,
+    #[serde(rename = "plainLyrics")]
+    plain_lyrics: Option<String>,
+}
+
+fn track_to_lines(synced_lyrics: Option<String>, plain_lyrics: Option<String>) -> Vec<LyricLine> {
+    if let Some(synced) = synced_lyrics.filter(|s| !s.is_empty()) {
+        return parser::parse_lrc(&synced);
+    }
+    if let Some(plain) = plain_lyrics.filter(|s| !s.is_empty()) {
+        return vec![LyricLine {
+            time_ms: 0,
+            text: plain,
+        }];
+    }
+    Vec::new()
 }

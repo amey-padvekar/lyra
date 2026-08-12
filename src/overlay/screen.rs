@@ -61,5 +61,64 @@ pub fn ensure_on_screen(window: &MainWindow) {
         .set_position(slint::PhysicalPosition::new(x, y));
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn ensure_on_screen(_window: &MainWindow) {
+    configure_macos_window(false);
+}
+
+/// Called once after the window has been fully realized on the event loop so
+/// `NSApplication.windows` is populated. Applies collection behaviour, level,
+/// and — only on this single deferred call — `orderFrontRegardless` to push
+/// the window into the current Space without stealing keyboard focus on every
+/// subsequent poll tick.
+#[cfg(target_os = "macos")]
+pub fn finalize_macos_window() {
+    configure_macos_window(true);
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_window(order_front: bool) {
+    use objc2::MainThreadMarker;
+    use objc2::rc::autoreleasepool;
+    use objc2_app_kit::{
+        NSApplication, NSApplicationActivationPolicy, NSScreenSaverWindowLevel,
+        NSWindowCollectionBehavior,
+    };
+
+    autoreleasepool(|_| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            crate::log!("could not get main-thread marker for macOS window configuration");
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        let windows = app.windows();
+        let count = windows.count();
+        for index in 0..count {
+            let window = windows.objectAtIndex(index);
+            let title = window.title().to_string();
+            if title != "Lyra" {
+                continue;
+            }
+            let behavior = window.collectionBehavior()
+                | NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::CanJoinAllApplications
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::FullScreenAuxiliary;
+            window.setCollectionBehavior(behavior);
+            // Screen-saver level keeps the lyric card visible in fullscreen
+            // app Spaces which sit above normal floating/status levels.
+            window.setLevel(NSScreenSaverWindowLevel);
+            window.setCanHide(false);
+            window.setHidesOnDeactivate(false);
+            if order_front {
+                // Only called once after realization — repeated calls would
+                // steal focus / trigger the macOS spinning-wait cursor.
+                window.orderFrontRegardless();
+            }
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn ensure_on_screen(_window: &MainWindow) {}

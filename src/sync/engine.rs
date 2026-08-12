@@ -15,6 +15,7 @@ pub struct SyncEngine {
     current_track: Option<(String, String, u64)>,
     last_poll: Option<NowPlaying>,
     baseline_ms: u64,
+    upcoming_line: String,
 }
 
 impl SyncEngine {
@@ -24,6 +25,7 @@ impl SyncEngine {
             current_track: None,
             last_poll: None,
             baseline_ms: 0,
+            upcoming_line: String::new(),
         }
     }
 
@@ -48,6 +50,13 @@ impl SyncEngine {
         if track_changed {
             self.baseline_ms = np.position_ms;
             self.current_track = Some(track_id);
+        } else if np.duration_ms == 0 {
+            // Sources with no real position API (e.g. the Firefox/YouTube
+            // Music window-title fallback) always report `position_ms: 0`.
+            // Treating that as authoritative would snap the timeline back to
+            // zero on every poll's seek check, so instead keep whatever the
+            // local wall-clock estimate already is and let it keep advancing.
+            self.baseline_ms = self.interpolate(np.received_at);
         } else {
             // Evaluated at `np.received_at`, not the caller's wall-clock time:
             // that's the instant `np.position_ms` is actually authoritative
@@ -70,11 +79,21 @@ impl SyncEngine {
     pub fn tick(&mut self, now: Instant) -> Option<String> {
         self.last_poll.as_ref()?;
         let pos = self.interpolate(now);
-        self.lines
-            .iter()
-            .filter(|line| line.time_ms <= pos)
-            .last()
+        let active_index = self.lines.iter().rposition(|line| line.time_ms <= pos);
+        let next_index = active_index.map_or(0, |i| i + 1);
+        self.upcoming_line = self
+            .lines
+            .get(next_index)
             .map(|line| line.text.clone())
+            .unwrap_or_default();
+        active_index.map(|i| self.lines[i].text.clone())
+    }
+
+    /// The lyric line after the one `tick` last returned — the next line to
+    /// come up, or empty before the first line / past the last one. Reflects
+    /// whatever `tick` most recently computed, so call it after `tick`.
+    pub fn next_line(&self) -> &str {
+        &self.upcoming_line
     }
 
     pub fn position_ms(&self, now: Instant) -> u64 {
@@ -89,13 +108,21 @@ impl SyncEngine {
         let Some(last) = &self.last_poll else {
             return self.baseline_ms;
         };
+        // A `duration_ms` of 0 means the source can't report a real duration
+        // (or position) at all, rather than the track genuinely being zero
+        // length — clamping against it would pin the position at 0 forever.
+        let cap = |position: u64| {
+            if last.duration_ms > 0 {
+                position.min(last.duration_ms)
+            } else {
+                position
+            }
+        };
         if !last.is_playing {
-            return self.baseline_ms.min(last.duration_ms);
+            return cap(self.baseline_ms);
         }
         let elapsed_ms = now.saturating_duration_since(last.received_at).as_millis() as u64;
-        self.baseline_ms
-            .saturating_add(elapsed_ms)
-            .min(last.duration_ms)
+        cap(self.baseline_ms.saturating_add(elapsed_ms))
     }
 }
 
@@ -210,6 +237,72 @@ mod tests {
         engine.set_lyrics(sample_lines());
 
         assert_eq!(engine.tick(base), None);
+    }
+
+    #[test]
+    fn next_line_reflects_the_line_after_current() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.set_lyrics(sample_lines());
+        engine.on_poll(now_playing(0, true, base));
+
+        assert_eq!(engine.tick(base), Some("line 0".to_string()));
+        assert_eq!(engine.next_line(), "line 1");
+
+        assert_eq!(
+            engine.tick(base + Duration::from_millis(6_000)),
+            Some("line 1".to_string())
+        );
+        assert_eq!(engine.next_line(), "line 2");
+    }
+
+    #[test]
+    fn next_line_is_empty_past_the_last_line() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.set_lyrics(sample_lines());
+        engine.on_poll(now_playing(0, true, base));
+
+        engine.tick(base + Duration::from_millis(11_000));
+        assert_eq!(engine.next_line(), "");
+    }
+
+    #[test]
+    fn next_line_is_the_first_line_before_playback_reaches_it() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.set_lyrics(vec![LyricLine {
+            time_ms: 5_000,
+            text: "line 0".to_string(),
+        }]);
+        engine.on_poll(now_playing(0, true, base));
+
+        assert_eq!(engine.tick(base), None);
+        assert_eq!(engine.next_line(), "line 0");
+    }
+
+    #[test]
+    fn unknown_duration_source_keeps_advancing_instead_of_resetting() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+
+        let mut first = now_playing(0, true, base);
+        first.duration_ms = 0;
+        engine.on_poll(first);
+
+        // The Firefox/YouTube-Music window-title fallback can't read real
+        // position, so it reports 0 on every poll. That must not be treated
+        // as an authoritative seek back to the start on every poll.
+        let poll_time = base + Duration::from_millis(2_000);
+        let mut second = now_playing(0, true, poll_time);
+        second.duration_ms = 0;
+        engine.on_poll(second);
+
+        let interpolated = engine.interpolate(poll_time);
+        assert!(
+            interpolated >= 1_900,
+            "expected position to keep advancing, got {interpolated}"
+        );
     }
 
     #[test]

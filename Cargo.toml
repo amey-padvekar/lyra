@@ -1,6 +1,6 @@
 [package]
 name = "lyra"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -13,8 +13,17 @@ slint = "1"
 thiserror = "1"
 ureq = { version = "2", features = ["json"] }
 
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris = "2"
+tray-icon = "0.24"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication", "NSWindow"] }
+tray-icon = { version = "0.24", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [

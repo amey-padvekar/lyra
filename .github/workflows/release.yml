@@ -10,7 +10,7 @@ permissions:
   contents: write   # needed to create a GitHub Release and upload assets
 
 jobs:
-  build:
+  build-windows:
     name: Build Windows release
     runs-on: windows-latest
 
@@ -45,11 +45,88 @@ jobs:
           $tag = "${{ github.ref_name }}"
           Copy-Item target\release\lyra.exe "lyra-$tag-x86_64-windows.exe"
 
-      - name: Create GitHub Release and upload binary
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: lyra-${{ github.ref_name }}-x86_64-windows.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS release (universal)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: macos-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: macos-release-
+
+      - name: Build release binary for each architecture
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      # Ships one binary that runs natively on both Apple Silicon and Intel
+      # Macs, rather than picking one architecture and leaving the other
+      # unsupported.
+      - name: Combine into a universal binary
+        run: |
+          mkdir -p target/universal
+          lipo -create \
+            target/aarch64-apple-darwin/release/lyra \
+            target/x86_64-apple-darwin/release/lyra \
+            -output target/universal/lyra
+          chmod +x target/universal/lyra
+
+      # Not code-signed or notarized — that needs an Apple Developer account
+      # (see README). Tarring preserves the executable bit through the
+      # release-asset upload/download round trip, which a bare binary isn't
+      # guaranteed to.
+      - name: Package as a tarball
+        run: tar -czf "lyra-${{ github.ref_name }}-universal-macos.tar.gz" -C target/universal lyra
+
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binary
+          path: lyra-${{ github.ref_name }}-universal-macos.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    # A single release job downstream of both builds, rather than each build
+    # job creating/updating the release itself — those run in parallel, and
+    # two concurrent first-time creates against the same new tag would race.
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release and upload binaries
         uses: softprops/action-gh-release@v2
         with:
           name: "Lyra ${{ github.ref_name }}"
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: lyra-${{ github.ref_name }}-x86_64-windows.exe
+          files: dist/*

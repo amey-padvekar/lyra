@@ -52,8 +52,7 @@ impl OverlayWindow {
                 .set_position(slint::LogicalPosition::new(current.x + dx, current.y + dy));
         });
 
-        // Hides rather than quits: the tray icon keeps running and its
-        // Show / hide brings the card back. Quit lives on the tray menu.
+        // Close hides the overlay so the tray/menu-bar icon can bring it back.
         let weak = window.as_weak();
         window.on_hide_overlay(move || {
             let Some(window) = weak.upgrade() else {
@@ -122,6 +121,15 @@ impl OverlayWindow {
         // After `show()`, not before: the window has to be realised for its
         // reported position to mean anything.
         screen::ensure_on_screen(&self.window);
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS the NSWindow list can still be empty right after `show`;
+            // retry once from the event loop after realization. `orderFrontRegardless`
+            // is called only here — not on the initial pass — so it fires exactly once.
+            slint::Timer::single_shot(Duration::from_millis(150), move || {
+                screen::finalize_macos_window();
+            });
+        }
         slint::run_event_loop_until_quit()
     }
 }

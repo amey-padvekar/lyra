@@ -7,5 +7,5 @@ pub mod lyrics;
 pub mod media;
 pub mod overlay;
 pub mod sync;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub mod tray;

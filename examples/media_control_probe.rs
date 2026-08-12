@@ -39,7 +39,7 @@ fn send(reader: &mut PlatformReader, command: MediaCommand) {
 }
 
 fn main() {
-    let mut reader = PlatformReader;
+    let mut reader = PlatformReader::new();
 
     show(&mut reader, "initial");
 

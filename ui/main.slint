@@ -32,6 +32,33 @@ component ControlButton inherits Rectangle {
     }
 }
 
+// One row of the two-line lyric display. `role` places and styles it:
+// 0 = current line (bright, larger, at rest), 1 = next line (dim, smaller,
+// at rest below it), 2 = "entering" — parked further below and fully
+// transparent, used only as the instant, invisible starting point right
+// after a row is handed new text, so it has somewhere to animate up *from*.
+// `instant`, driven from Rust, collapses the transition to 0ms for exactly
+// that hidden hand-off; every other transition animates normally, which is
+// what turns role 2 -> 1 into the "next line rises into view" motion and
+// role 1 -> 0 into the "next line becomes current" motion.
+component LyricRow inherits Text {
+    in property <int> role;
+    in property <bool> instant;
+
+    horizontal-alignment: center;
+    wrap: word-wrap;
+    width: 100%;
+    color: role == 0 ? #e8e8ec : #7a7a85;
+    font-size: role == 0 ? 16px : 12px;
+    y: role == 0 ? 0px : (role == 1 ? 26px : 52px);
+    opacity: role == 0 ? 1.0 : (role == 1 ? 0.65 : 0.0);
+
+    animate color, font-size, y, opacity {
+        duration: instant ? 0ms : 260ms;
+        easing: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+}
+
 export component MainWindow inherits Window {
     // `preferred-*` rather than `width`/`height`: setting those pins min == max,
     // which the winit backend reads as "not resizable".
@@ -53,14 +80,21 @@ export component MainWindow inherits Window {
 
     in property <string> track-title;
     in property <string> track-artist;
-    in property <string> current-line;
     in property <string> elapsed-label;
     in property <string> total-label;
     // 0.0 - 1.0 fraction of the track that's played so far.
     in property <float> progress;
-    // Driven from Rust: dipped to 0 then back to 1 around a line change, so
-    // the transition crossfades instead of snapping.
-    in property <float> line-opacity: 1.0;
+    // The two visible lyric rows. Which text is "current" vs "next" isn't
+    // fixed to slot A or B — Rust flips which slot plays which role each
+    // time the line advances, so a row can animate smoothly from "next" into
+    // "current" without its text ever changing mid-transition. See
+    // `LyricRow` above and `app.rs`'s `promote_and_advance`/`snap_lyric_rows`.
+    in property <string> line-a-text;
+    in property <string> line-b-text;
+    in property <int> line-a-role: 0;
+    in property <int> line-b-role: 1;
+    in property <bool> line-a-instant;
+    in property <bool> line-b-instant;
     in property <bool> is-playing;
     in property <bool> can-play-pause;
     in property <bool> can-next;
@@ -75,7 +109,10 @@ export component MainWindow inherits Window {
     // Declared before `card` so it sits *below* it. The control buttons'
     // TouchAreas then take input priority, while clicks anywhere inert
     // (text, background) fall through to here and drag the window.
+    // `mouse-cursor: default` prevents the OS spinning-wait cursor that appears
+    // when a window captures events but its cursor style is unspecified.
     drag-area := TouchArea {
+        mouse-cursor: default;
         moved => {
             if (drag-area.pressed) {
                 root.drag-window(drag-area.mouse-x - drag-area.pressed-x, drag-area.mouse-y - drag-area.pressed-y);
@@ -110,20 +147,24 @@ export component MainWindow inherits Window {
                 horizontal-alignment: center;
                 overflow: elide;
             }
-            Text {
-                text: current-line;
-                color: #e8e8ec;
-                font-size: 16px;
-                horizontal-alignment: center;
-                // Sole stretchy row, so growing the window gives the lyric the
+            Rectangle {
+                clip: true;
+                // Sole stretchy row, so growing the window gives the lyrics
                 // extra height instead of padding the gaps everywhere.
+                // `min-height` covers both rows at their resting positions
+                // (26px apart) plus the current row's own line height.
+                min-height: 60px;
                 vertical-stretch: 1;
-                vertical-alignment: center;
-                wrap: word-wrap;
-                opacity: line-opacity;
-                animate opacity {
-                    duration: 150ms;
-                    easing: ease-in-out;
+
+                lineA := LyricRow {
+                    text: line-a-text;
+                    role: line-a-role;
+                    instant: line-a-instant;
+                }
+                lineB := LyricRow {
+                    text: line-b-text;
+                    role: line-b-role;
+                    instant: line-b-instant;
                 }
             }
 
@@ -229,7 +270,7 @@ export component MainWindow inherits Window {
         }
 
         // Declared after the layout so it draws on top and wins the click.
-        // Hides to the tray rather than quitting — the tray menu owns Quit.
+        // Close hides to tray/menu-bar; quit lives in that menu.
         close-button := Rectangle {
             x: parent.width - self.width - 12px;
             y: 12px;

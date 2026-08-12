@@ -17,6 +17,12 @@ use crate::media::{MediaCommand, MediaReader};
 /// requested fresh and dropped before returning.
 pub struct GsmtcReader;
 
+impl GsmtcReader {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl MediaReader for GsmtcReader {
     fn poll(&mut self) -> anyhow::Result<Option<NowPlaying>> {
         let manager = wait(SessionManager::RequestAsync()?)?;

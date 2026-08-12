@@ -10,18 +10,30 @@ use crate::lyrics::cache::LyricsCache;
 use crate::lyrics::fetcher::LyricsFetcher;
 use crate::lyrics::LyricLine;
 use crate::media::{MediaCommand, MediaReader, PlatformReader};
-use crate::overlay::OverlayWindow;
+use crate::overlay::{MainWindow, OverlayWindow};
 use crate::sync::engine::SyncEngine;
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use crate::tray::{Tray, TrayCommand};
 
-/// How long the outgoing line's fade-out takes before the text swaps and the
-/// incoming line starts fading in — kept equal to `main.slint`'s `animate
-/// opacity` duration so the swap lands exactly at the invisible trough.
-const LINE_FADE_MS: u64 = 150;
+/// `LyricRow` role values — kept in sync with the `role` contract documented
+/// on `LyricRow` in `main.slint`.
+const ROLE_CURRENT: i32 = 0;
+const ROLE_NEXT: i32 = 1;
+const ROLE_ENTERING: i32 = 2;
+
+/// How long a row parked in the hidden "entering" role sits there before
+/// animating up into "next". Just needs to span at least one rendered frame,
+/// so the animation has a starting point to move *from* instead of popping
+/// straight into place — see `promote_and_advance`.
+const LYRIC_ENTER_DELAY_MS: u64 = 32;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 type TrackId = (String, String, u64);
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+type TrayHandle = Tray;
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+type TrayHandle = ();
 
 /// Identity is (title, artist) only, not duration_ms: some GSMTC sources
 /// (notably browser-based players) report a duration that jitters by a few ms
@@ -33,6 +45,83 @@ fn same_track(a: &TrackId, b: &TrackId) -> bool {
     a.0 == b.0 && a.1 == b.1
 }
 
+/// Ordinary one-line advance: the row already showing `line` (last cycle's
+/// "next") is promoted into the "current" role — its text never changes, so
+/// it can animate smoothly. The retiring row is instantly (invisibly)
+/// repurposed to hold the new `next_line`, then, after `LYRIC_ENTER_DELAY_MS`
+/// has given it a frame to render in that hidden state, released to animate
+/// up into the "next" role — the "next line rises into view" motion.
+fn promote_and_advance(
+    ui: &MainWindow,
+    weak: &slint::Weak<MainWindow>,
+    current_slot_is_a: bool,
+    next_line: &str,
+) {
+    if current_slot_is_a {
+        ui.set_line_b_role(ROLE_CURRENT);
+        ui.set_line_a_instant(true);
+        ui.set_line_a_text(next_line.into());
+        ui.set_line_a_role(ROLE_ENTERING);
+    } else {
+        ui.set_line_a_role(ROLE_CURRENT);
+        ui.set_line_b_instant(true);
+        ui.set_line_b_text(next_line.into());
+        ui.set_line_b_role(ROLE_ENTERING);
+    }
+
+    // The retiring slot is whichever one just got parked in ROLE_ENTERING.
+    let entering_is_a = current_slot_is_a;
+    let weak = weak.clone();
+    slint::Timer::single_shot(Duration::from_millis(LYRIC_ENTER_DELAY_MS), move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if entering_is_a {
+            ui.set_line_a_instant(false);
+            ui.set_line_a_role(ROLE_NEXT);
+        } else {
+            ui.set_line_b_instant(false);
+            ui.set_line_b_role(ROLE_NEXT);
+        }
+    });
+}
+
+/// A seek, the first line of a track, or any jump that skips lines: there is
+/// no row already showing the right text to promote, so both rows snap
+/// directly to the correct state instead of sliding through unrelated lines
+/// — matching how `SyncEngine` itself snaps the timeline on a seek rather
+/// than easing through it.
+fn snap_lyric_rows(
+    ui: &MainWindow,
+    weak: &slint::Weak<MainWindow>,
+    current_slot_is_a: bool,
+    line: &str,
+    next_line: &str,
+) {
+    ui.set_line_a_instant(true);
+    ui.set_line_b_instant(true);
+    if current_slot_is_a {
+        ui.set_line_a_text(line.into());
+        ui.set_line_a_role(ROLE_CURRENT);
+        ui.set_line_b_text(next_line.into());
+        ui.set_line_b_role(ROLE_NEXT);
+    } else {
+        ui.set_line_b_text(line.into());
+        ui.set_line_b_role(ROLE_CURRENT);
+        ui.set_line_a_text(next_line.into());
+        ui.set_line_a_role(ROLE_NEXT);
+    }
+
+    let weak = weak.clone();
+    slint::Timer::single_shot(Duration::from_millis(LYRIC_ENTER_DELAY_MS), move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        ui.set_line_a_instant(false);
+        ui.set_line_b_instant(false);
+    });
+}
+
 fn format_mmss(ms: u64) -> String {
     let total_secs = ms / 1_000;
     let minutes = total_secs / 60;
@@ -40,17 +129,83 @@ fn format_mmss(ms: u64) -> String {
     format!("{minutes}:{seconds:02}")
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn create_tray() -> Option<TrayHandle> {
+    // Same thread requirement as the hotkey manager, and the same
+    // must-stay-alive caveat: dropping it removes the icon from the tray.
+    // This is the only way to quit, so failing to create it is worth shouting
+    // about.
+    match Tray::new() {
+        Ok(tray) => Some(tray),
+        Err(e) => {
+            crate::log!("could not create tray icon — no way to quit from the UI: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn create_tray() -> Option<TrayHandle> {
+    None
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn tray_state(tray: Option<&TrayHandle>) -> (bool, bool) {
+    let command = tray.and_then(Tray::poll);
+    (
+        matches!(command, Some(TrayCommand::Quit)),
+        matches!(command, Some(TrayCommand::ToggleVisibility)),
+    )
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn tray_state(_tray: Option<&TrayHandle>) -> (bool, bool) {
+    (false, false)
+}
+
+/// Ctrl-Z (SIGTSTP) merely suspends the process — normal job-control
+/// behaviour, not a hang, and `fg`/SIGCONT resumes it fine. But nothing
+/// otherwise installs a SIGINT/SIGTERM handler, so Ctrl-C or a bare `kill`
+/// hard-kills the process mid-event-loop instead of going through the same
+/// quit path as the tray's "Quit Lyra". `quit_event_loop()` is documented as
+/// callable from any thread, so this runs straight from the watcher thread
+/// rather than bouncing through `invoke_from_event_loop`.
+#[cfg(unix)]
+fn install_signal_handler() {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let mut signals = match Signals::new([SIGINT, SIGTERM]) {
+        Ok(signals) => signals,
+        Err(e) => {
+            crate::log!("could not install signal handler: {e}");
+            return;
+        }
+    };
+    thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            crate::log!("received signal {signal}, quitting");
+            slint::quit_event_loop().ok();
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn install_signal_handler() {}
+
 pub fn run() {
+    install_signal_handler();
+
     let (np_tx, np_rx) = mpsc::channel::<NowPlaying>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<MediaCommand>();
     let (lyrics_req_tx, lyrics_req_rx) = mpsc::channel::<TrackId>();
     let (lyrics_res_tx, lyrics_res_rx) = mpsc::channel::<(TrackId, Vec<LyricLine>)>();
 
     // Transport commands run on this same thread rather than the UI thread:
-    // the GSMTC handles are `!Send`, so they can't cross threads, and issuing
-    // one blocks on a WinRT round-trip that would stutter the card.
+    // platform readers may rely on thread-affine APIs and some commands can
+    // block briefly, so this keeps the card responsive.
     thread::spawn(move || {
-        let mut reader = PlatformReader;
+        let mut reader = PlatformReader::new();
         loop {
             match reader.poll() {
                 Ok(Some(np)) => {
@@ -92,20 +247,22 @@ pub fn run() {
 
         for (title, artist, duration_ms) in lyrics_req_rx {
             let lines = match cache.get(&title, &artist, duration_ms) {
-                Some(lines) => {
+                Some(lines) if !lines.is_empty() => {
                     crate::log!(
                         "lyrics: cache hit for {title} - {artist}: {} lines",
                         lines.len()
                     );
                     lines
                 }
-                None => match LyricsFetcher::fetch(&title, &artist, duration_ms) {
+                _ => match LyricsFetcher::fetch(&title, &artist, duration_ms) {
                     Ok(lines) => {
                         crate::log!(
                             "lyrics: fetched {title} - {artist} ({duration_ms}ms): {} lines",
                             lines.len()
                         );
-                        if let Err(e) = cache.set(&title, &artist, duration_ms, &lines) {
+                        if !lines.is_empty()
+                            && let Err(e) = cache.set(&title, &artist, duration_ms, &lines)
+                        {
                             crate::log!("could not cache lyrics: {e}");
                         }
                         lines
@@ -137,9 +294,9 @@ pub fn run() {
         }
     });
 
-    // Must be created on this (the UI event loop's) thread: it creates a
-    // hidden window that only receives WM_HOTKEY messages while this thread's
-    // message loop is being pumped, which starts below via `overlay.run()`.
+    // Must be created on this (the UI event loop's) thread: the underlying
+    // platform event source is pumped by the same event loop started below via
+    // `overlay.run()`.
     let hotkeys = match HotkeyManager::new() {
         Ok(hotkeys) => Some(hotkeys),
         Err(e) => {
@@ -148,21 +305,16 @@ pub fn run() {
         }
     };
 
-    // Same thread requirement as the hotkey manager, and the same
-    // must-stay-alive caveat: dropping it removes the icon from the tray.
-    // This is the only way to quit, so failing to create it is worth shouting
-    // about.
-    let tray = match Tray::new() {
-        Ok(tray) => Some(tray),
-        Err(e) => {
-            crate::log!("could not create tray icon — no way to quit from the UI: {e}");
-            None
-        }
-    };
+    let tray = create_tray();
 
     let mut engine = SyncEngine::new();
     let mut current_track: Option<TrackId> = None;
     let mut last_line: Option<String> = None;
+    let mut last_next_line: Option<String> = None;
+    // Which Slint slot (line-a vs line-b) is currently playing the "current"
+    // role — flips every advance so the row that already shows the right
+    // text is the one promoted, instead of always writing to the same slot.
+    let mut current_slot_is_a = true;
 
     let timer = slint::Timer::default();
     timer.start(
@@ -173,8 +325,8 @@ pub fn run() {
                 return;
             };
 
-            let tray_command = tray.as_ref().and_then(Tray::poll);
-            if matches!(tray_command, Some(TrayCommand::Quit)) {
+            let (quit_requested, tray_toggle_requested) = tray_state(tray.as_ref());
+            if quit_requested {
                 crate::log!("quit requested from tray");
                 // Ends `run_event_loop_until_quit()`, so `run()` returns and
                 // the process exits normally.
@@ -183,7 +335,7 @@ pub fn run() {
             }
 
             let toggle_requested = hotkeys.as_ref().is_some_and(HotkeyManager::poll_toggle)
-                || matches!(tray_command, Some(TrayCommand::ToggleVisibility));
+                || tray_toggle_requested;
             if toggle_requested {
                 let window = ui.window();
                 let toggled = if window.is_visible() {
@@ -244,20 +396,22 @@ pub fn run() {
 
             let line = engine.tick(now).unwrap_or_default();
             if last_line.as_ref() != Some(&line) {
-                last_line = Some(line.clone());
+                let next_line = engine.next_line().to_string();
+                // Only true for an ordinary one-line advance, where the row
+                // already showing `line` (last cycle's "next") can simply be
+                // promoted. Anything else — the first line of a track, or a
+                // seek that skips lines — has no such row to promote.
+                let advanced_by_one = last_next_line.as_deref() == Some(line.as_str());
 
-                // Fade the outgoing line out; the text swap and fade-in are
-                // deferred to a one-shot timer landing at the fade's
-                // invisible trough, so the swap itself is never seen.
-                ui.set_line_opacity(0.0);
-                let weak_for_swap = weak.clone();
-                slint::Timer::single_shot(Duration::from_millis(LINE_FADE_MS), move || {
-                    let Some(ui) = weak_for_swap.upgrade() else {
-                        return;
-                    };
-                    ui.set_current_line(line.into());
-                    ui.set_line_opacity(1.0);
-                });
+                if advanced_by_one {
+                    promote_and_advance(&ui, &weak, current_slot_is_a, &next_line);
+                    current_slot_is_a = !current_slot_is_a;
+                } else {
+                    snap_lyric_rows(&ui, &weak, current_slot_is_a, &line, &next_line);
+                }
+
+                last_line = Some(line);
+                last_next_line = Some(next_line);
             }
 
             let position_ms = engine.position_ms(now);
