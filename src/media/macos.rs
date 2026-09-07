@@ -24,6 +24,7 @@ struct MacNowPlaying {
     can_play_pause: bool,
     can_next: bool,
     can_previous: bool,
+    can_seek: bool,
 }
 
 impl MediaReader for AppleScriptReader {
@@ -57,18 +58,26 @@ impl MediaReader for AppleScriptReader {
             can_play_pause: current.can_play_pause,
             can_next: current.can_next,
             can_previous: current.can_previous,
+            can_seek: current.can_seek,
         }))
     }
 
     fn execute(&mut self, command: MediaCommand) -> anyhow::Result<()> {
+        // Seek is the only command carrying a value, so its script is built per
+        // call. The substitution is a number this code formatted itself —
+        // nothing from the source or the user reaches the script text.
         let script = match command {
-            MediaCommand::TogglePlayPause => EXECUTE_TOGGLE_SCRIPT,
-            MediaCommand::Next => EXECUTE_NEXT_SCRIPT,
-            MediaCommand::Previous => EXECUTE_PREVIOUS_SCRIPT,
+            MediaCommand::TogglePlayPause => EXECUTE_TOGGLE_SCRIPT.to_string(),
+            MediaCommand::Next => EXECUTE_NEXT_SCRIPT.to_string(),
+            MediaCommand::Previous => EXECUTE_PREVIOUS_SCRIPT.to_string(),
+            MediaCommand::Seek { position_ms } => EXECUTE_SEEK_SCRIPT.replace(
+                SEEK_SECONDS_PLACEHOLDER,
+                &format!("{:.3}", position_ms as f64 / 1_000.0),
+            ),
         };
 
         let output = Command::new("osascript")
-            .args(["-l", "JavaScript", "-e", script])
+            .args(["-l", "JavaScript", "-e", script.as_str()])
             .output()
             .context("failed to run osascript for macOS media command")?;
 
@@ -170,7 +179,8 @@ function readMusicLike(name) {
       is_playing: state === "playing",
       can_play_pause: true,
       can_next: true,
-      can_previous: true
+      can_previous: true,
+      can_seek: true
     };
   } catch (e) {
     return null;
@@ -206,7 +216,8 @@ function readVlc() {
       is_playing: Boolean(callOr(() => app.playing(), false)),
       can_play_pause: true,
       can_next: true,
-      can_previous: true
+      can_previous: true,
+      can_seek: true
     };
   } catch (e) {
     return null;
@@ -237,7 +248,8 @@ function parseYouTubeMusicTitle(windowTitle) {
     is_playing: true,
     can_play_pause: false,
     can_next: false,
-    can_previous: false
+    can_previous: false,
+    can_seek: false
   };
 }
 
@@ -404,4 +416,54 @@ sendPreviousMusicLike("Music")
   || sendPreviousMusicLike("Spotify")
   || sendPreviousMusicLike("TV")
   || sendPreviousVlc();
+"#;
+
+/// Substituted with the target position in seconds before the script runs.
+const SEEK_SECONDS_PLACEHOLDER: &str = "__SEEK_SECONDS__";
+
+/// Every setter goes through `callOk`: the position property differs between
+/// these apps and their scripting dictionaries change between versions, so a
+/// name a given app does not have has to read as "source declined" rather than
+/// failing the whole command.
+const EXECUTE_SEEK_SCRIPT: &str = r#"
+function callOk(f) {
+  try {
+    f();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+const seconds = __SEEK_SECONDS__;
+
+function seekMusicLike(name) {
+  try {
+    const app = Application(name);
+    if (!app.running()) {
+      return false;
+    }
+    return callOk(() => { app.playerPosition = seconds; });
+  } catch (e) {
+    return false;
+  }
+}
+
+function seekVlc() {
+  try {
+    const app = Application("VLC");
+    if (!app.running()) {
+      return false;
+    }
+    return callOk(() => { app.currentTime = Math.round(seconds); })
+      || callOk(() => { app.playerPosition = seconds; });
+  } catch (e) {
+    return false;
+  }
+}
+
+seekMusicLike("Music")
+  || seekMusicLike("Spotify")
+  || seekMusicLike("TV")
+  || seekVlc();
 "#;

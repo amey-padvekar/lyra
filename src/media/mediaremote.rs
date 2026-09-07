@@ -80,19 +80,28 @@ impl MediaRemoteAdapter {
         self.latest.lock().ok()?.clone()
     }
 
+    /// The three transport subcommands are the documented ones. `seek` and its
+    /// argument unit are **not** verified against the tool — if the guess is
+    /// wrong the process exits non-zero, and `HybridReader::execute` falls
+    /// through to the AppleScript path, which is the tested route for seeking.
     pub fn send(&self, command: MediaCommand) -> anyhow::Result<()> {
-        let subcommand = match command {
-            MediaCommand::TogglePlayPause => "toggle-play-pause",
-            MediaCommand::Next => "next-track",
-            MediaCommand::Previous => "previous-track",
+        let args: Vec<String> = match command {
+            MediaCommand::TogglePlayPause => vec!["toggle-play-pause".to_string()],
+            MediaCommand::Next => vec!["next-track".to_string()],
+            MediaCommand::Previous => vec!["previous-track".to_string()],
+            MediaCommand::Seek { position_ms } => vec![
+                "seek".to_string(),
+                format!("{:.3}", position_ms as f64 / 1_000.0),
+            ],
         };
         let output = CANDIDATES
             .iter()
-            .find_map(|path| Command::new(path).arg(subcommand).output().ok())
+            .find_map(|path| Command::new(path).args(&args).output().ok())
             .ok_or_else(|| anyhow::anyhow!("media-control not found"))?;
         if !output.status.success() {
             anyhow::bail!(
-                "media-control {subcommand} failed: {}",
+                "media-control {} failed: {}",
+                args.join(" "),
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
@@ -131,6 +140,10 @@ fn parse_payload(payload: &Value, received_at: Instant) -> Option<NowPlaying> {
         can_play_pause: true,
         can_next: true,
         can_previous: true,
+        // Hardcoded like the transport flags above: the payload carries no
+        // capability information, so this is an assumption, not a report from
+        // the source. A source that refuses the seek just snaps back.
+        can_seek: true,
     })
 }
 

@@ -199,6 +199,7 @@ pub fn run() {
     let (np_tx, np_rx) = mpsc::channel::<NowPlaying>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<MediaCommand>();
     let (lyrics_req_tx, lyrics_req_rx) = mpsc::channel::<TrackId>();
+    let (seek_tx, seek_rx) = mpsc::channel::<f32>();
     let (lyrics_res_tx, lyrics_res_rx) = mpsc::channel::<(TrackId, Vec<LyricLine>)>();
 
     // Transport commands run on this same thread rather than the UI thread:
@@ -288,9 +289,21 @@ pub fn run() {
     };
     let weak = overlay.as_weak();
 
+    // Cloned before the transport handler takes ownership: seeks travel the
+    // same channel to the same media thread, just from a different callback.
+    let seek_cmd_tx = cmd_tx.clone();
     overlay.on_media_command(move |command| {
         if cmd_tx.send(command).is_err() {
             crate::log!("media thread is gone, dropping {command:?}");
+        }
+    });
+
+    // Handed to the timer below rather than acted on here: turning the clicked
+    // fraction into a position needs the engine's duration, and the engine is
+    // owned by the timer closure.
+    overlay.on_seek(move |fraction| {
+        if seek_tx.send(fraction).is_err() {
+            crate::log!("seek dropped: nothing is reading the seek channel");
         }
     });
 
@@ -373,6 +386,9 @@ pub fn run() {
                 ui.set_can_play_pause(np.can_play_pause);
                 ui.set_can_next(np.can_next);
                 ui.set_can_previous(np.can_previous);
+                // A source with no real duration has no position to seek *to*,
+                // whatever it claims about the capability.
+                ui.set_can_seek(np.can_seek && np.duration_ms > 0);
 
                 engine.on_poll(np);
             }
@@ -393,6 +409,31 @@ pub fn run() {
             }
 
             let now = Instant::now();
+
+            // Only the last click of a tick matters — an earlier one in the same
+            // frame is already superseded.
+            let mut seek_fraction = None;
+            while let Ok(fraction) = seek_rx.try_recv() {
+                seek_fraction = Some(fraction);
+            }
+            if let Some(fraction) = seek_fraction {
+                let duration_ms = engine.duration_ms();
+                if duration_ms > 0 {
+                    let position_ms =
+                        (f64::from(fraction).clamp(0.0, 1.0) * duration_ms as f64) as u64;
+                    crate::log!("seek requested: {position_ms}ms of {duration_ms}ms");
+                    // Applied locally first so the card moves on this frame
+                    // instead of a poll interval later; the source's next report
+                    // corrects it if the seek was refused.
+                    engine.seek_to(position_ms, now);
+                    if seek_cmd_tx
+                        .send(MediaCommand::Seek { position_ms })
+                        .is_err()
+                    {
+                        crate::log!("media thread is gone, dropping seek");
+                    }
+                }
+            }
 
             let line = engine.tick(now).unwrap_or_default();
             if last_line.as_ref() != Some(&line) {

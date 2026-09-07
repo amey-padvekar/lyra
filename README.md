@@ -22,6 +22,7 @@ this codebase:
 - macOS media polling through the system Now Playing session (via `media-control`,
   when installed) with an AppleScript fallback (Music, Spotify, TV, and VLC)
 - transport controls for play/pause, previous, and next when the source supports them
+- click-to-seek on the progress bar, when the source reports it allows it
 - lyric lookup through LRCLIB with a fallback to lyrics.ovh
 - local disk caching for lyrics
 - a global hotkey to show or hide the overlay
@@ -37,6 +38,7 @@ currently limited to AppleScript-accessible players (Music, Spotify, TV, VLC).
 - Keep the lyric line moving smoothly as playback progresses
 - Display elapsed and total time with a progress indicator
 - Send previous, play/pause, and next commands when the source supports them
+- Click the progress bar to jump to that point in the track
 - Fetch lyrics from LRCLIB and fall back to lyrics.ovh when needed
 - Cache lyrics locally so repeated lookups are faster
 - Keep the overlay above other windows and remember its last position and size

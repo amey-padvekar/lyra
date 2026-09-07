@@ -9,6 +9,11 @@ const SEEK_THRESHOLD_MS: i64 = 1000;
 /// Fraction of a drift correction applied per poll when easing toward the
 /// reported position.
 const DRIFT_EASE_ALPHA: f64 = 0.2;
+/// How many consecutive polls that predate an issued seek may be discarded
+/// before the engine trusts the source again. Without a bound, a source whose
+/// reported timestamp never advances would have every poll after a seek
+/// discarded for the rest of the track.
+const MAX_STALE_POLLS_AFTER_SEEK: u8 = 3;
 
 pub struct SyncEngine {
     lines: Vec<LyricLine>,
@@ -16,6 +21,10 @@ pub struct SyncEngine {
     last_poll: Option<NowPlaying>,
     baseline_ms: u64,
     upcoming_line: String,
+    /// When the last locally-issued seek was applied, and how many polls have
+    /// been discarded as predating it. Cleared as soon as a poll catches up.
+    seek_at: Option<Instant>,
+    stale_polls_after_seek: u8,
 }
 
 impl SyncEngine {
@@ -26,6 +35,8 @@ impl SyncEngine {
             last_poll: None,
             baseline_ms: 0,
             upcoming_line: String::new(),
+            seek_at: None,
+            stale_polls_after_seek: 0,
         }
     }
 
@@ -46,6 +57,22 @@ impl SyncEngine {
             Some((title, artist, _)) => *title != np.title || *artist != np.artist,
             None => true,
         };
+
+        // A poll whose position was captured before a seek was issued cannot
+        // reflect that seek yet. Trusting it snaps the timeline back to where
+        // the track was and then forward again one poll later — a visible
+        // double jump on every scrub. Take everything except the timeline from
+        // it, and keep the position `seek_to` already established.
+        if !track_changed && self.is_stale_after_seek(&np) {
+            self.stale_polls_after_seek += 1;
+            let received_at = self
+                .last_poll
+                .as_ref()
+                .map_or(np.received_at, |last| last.received_at);
+            self.last_poll = Some(NowPlaying { received_at, ..np });
+            return;
+        }
+        self.seek_at = None;
 
         if track_changed {
             self.baseline_ms = np.position_ms;
@@ -74,6 +101,43 @@ impl SyncEngine {
         }
 
         self.last_poll = Some(np);
+    }
+
+    /// Rebases the timeline onto `position_ms` as of `now`, for a seek this app
+    /// has just issued. Applied locally instead of waiting for the source to
+    /// report the new position back, so the card and the lyric line move the
+    /// instant the progress bar is clicked rather than up to a poll interval
+    /// later. The source still has the final say: if it declined the seek, its
+    /// next reported position is far enough from this to register as a jump and
+    /// snap the timeline back.
+    ///
+    /// No-op before the first poll — there is no timeline to rebase, `tick`
+    /// returns `None` regardless, and arming the stale-poll guard that early
+    /// would only discard the first real poll of the track.
+    pub fn seek_to(&mut self, position_ms: u64, now: Instant) {
+        let Some(last) = &mut self.last_poll else {
+            return;
+        };
+        let position_ms = if last.duration_ms > 0 {
+            position_ms.min(last.duration_ms)
+        } else {
+            position_ms
+        };
+        // Interpolation runs from `last.received_at`, which is when the *source*
+        // says its position was current — deliberately stale. Moving it to `now`
+        // is what makes the new position take effect immediately instead of
+        // being extrapolated forward from a moment that has already passed.
+        last.received_at = now;
+        self.baseline_ms = position_ms;
+        self.seek_at = Some(now);
+        self.stale_polls_after_seek = 0;
+    }
+
+    fn is_stale_after_seek(&self, np: &NowPlaying) -> bool {
+        self.stale_polls_after_seek < MAX_STALE_POLLS_AFTER_SEEK
+            && self
+                .seek_at
+                .is_some_and(|seek_at| np.received_at < seek_at)
     }
 
     pub fn tick(&mut self, now: Instant) -> Option<String> {
@@ -148,6 +212,7 @@ mod tests {
             can_play_pause: true,
             can_next: true,
             can_previous: true,
+            can_seek: true,
         }
     }
 
@@ -303,6 +368,81 @@ mod tests {
             interpolated >= 1_900,
             "expected position to keep advancing, got {interpolated}"
         );
+    }
+
+    #[test]
+    fn seek_to_moves_the_timeline_without_waiting_for_a_poll() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.set_lyrics(sample_lines());
+        engine.on_poll(now_playing(0, true, base));
+
+        let seek_at = base + Duration::from_millis(500);
+        engine.seek_to(10_000, seek_at);
+
+        assert_eq!(engine.position_ms(seek_at), 10_000);
+        assert_eq!(engine.tick(seek_at), Some("line 2".to_string()));
+    }
+
+    #[test]
+    fn seek_to_before_any_poll_is_ignored() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.seek_to(10_000, base);
+
+        // Nothing to rebase — and crucially the stale-poll guard must not be
+        // armed, or the first real poll of the track would be discarded.
+        engine.on_poll(now_playing(4_000, true, base + Duration::from_millis(500)));
+        assert_eq!(engine.position_ms(base + Duration::from_millis(500)), 4_000);
+    }
+
+    #[test]
+    fn ignores_a_poll_captured_before_the_seek() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.on_poll(now_playing(0, true, base));
+
+        let seek_at = base + Duration::from_millis(500);
+        engine.seek_to(60_000, seek_at);
+        // Captured 300ms *before* the seek was issued, so it still reports the
+        // old position — that is not evidence the seek was refused.
+        engine.on_poll(now_playing(200, true, base + Duration::from_millis(200)));
+
+        assert_eq!(engine.position_ms(seek_at), 60_000);
+    }
+
+    #[test]
+    fn accepts_a_poll_captured_after_the_seek() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.on_poll(now_playing(0, true, base));
+
+        let seek_at = base + Duration::from_millis(500);
+        engine.seek_to(60_000, seek_at);
+        // Captured after the seek, so it reflects what the source actually did
+        // with it — authoritative again, and it landed 1s short of the ask.
+        let poll_at = base + Duration::from_millis(1_500);
+        engine.on_poll(now_playing(59_000, true, poll_at));
+
+        assert_eq!(engine.position_ms(poll_at), 59_000);
+    }
+
+    #[test]
+    fn stops_ignoring_stale_polls_when_the_source_clock_never_advances() {
+        let base = Instant::now();
+        let mut engine = SyncEngine::new();
+        engine.on_poll(now_playing(0, true, base));
+
+        let seek_at = base + Duration::from_millis(500);
+        let frozen_at = base + Duration::from_millis(200);
+        engine.seek_to(60_000, seek_at);
+        for _ in 0..=MAX_STALE_POLLS_AFTER_SEEK {
+            engine.on_poll(now_playing(1_000, true, frozen_at));
+        }
+
+        // A source stuck at a pre-seek timestamp would otherwise be ignored for
+        // the rest of the track; past the bound it wins.
+        assert_eq!(engine.position_ms(frozen_at), 1_000);
     }
 
     #[test]

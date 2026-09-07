@@ -32,6 +32,19 @@ component ControlButton inherits Rectangle {
     }
 }
 
+// Type scale and spacing for the two-line lyric stack. Shared between
+// `LyricRow` and the sizing probe in `MainWindow` so the probe always
+// measures at exactly the size the current row renders at — a row that sets
+// its own `font-size`, `font-weight` or `font-family` would measure short.
+global LyricStyle {
+    out property <length> current-size: 16px;
+    out property <length> next-size: 12px;
+    // Space between the bottom of the current line and the top of the next.
+    out property <length> gap: 6px;
+    // How far below its resting place a row parks while "entering".
+    out property <length> enter-drop: 26px;
+}
+
 // One row of the two-line lyric display. `role` places and styles it:
 // 0 = current line (bright, larger, at rest), 1 = next line (dim, smaller,
 // at rest below it), 2 = "entering" — parked further below and fully
@@ -41,16 +54,22 @@ component ControlButton inherits Rectangle {
 // that hidden hand-off; every other transition animates normally, which is
 // what turns role 2 -> 1 into the "next line rises into view" motion and
 // role 1 -> 0 into the "next line becomes current" motion.
+//
+// `stack-offset` is where role 1 comes to rest. It's measured and passed down
+// by the parent rather than fixed here, because the current line wraps to two
+// visual lines often enough that a constant offset would leave the next line
+// drawn on top of the current line's second row.
 component LyricRow inherits Text {
     in property <int> role;
     in property <bool> instant;
+    in property <length> stack-offset;
 
     horizontal-alignment: center;
     wrap: word-wrap;
     width: 100%;
     color: role == 0 ? #e8e8ec : #7a7a85;
-    font-size: role == 0 ? 16px : 12px;
-    y: role == 0 ? 0px : (role == 1 ? 26px : 52px);
+    font-size: role == 0 ? LyricStyle.current-size : LyricStyle.next-size;
+    y: role == 0 ? 0px : (role == 1 ? stack-offset : stack-offset + LyricStyle.enter-drop);
     opacity: role == 0 ? 1.0 : (role == 1 ? 0.65 : 0.0);
 
     animate color, font-size, y, opacity {
@@ -99,12 +118,17 @@ export component MainWindow inherits Window {
     in property <bool> can-play-pause;
     in property <bool> can-next;
     in property <bool> can-previous;
+    in property <bool> can-seek;
 
     callback drag-window(length, length);
     callback toggle-play-pause();
     callback skip-next();
     callback skip-previous();
     callback hide-overlay();
+    /// Where on the track the user clicked, as a 0.0-1.0 fraction. Deliberately
+    /// not a position in ms: the track duration lives on the Rust side, and
+    /// this way the UI never has to hold a second copy of it.
+    callback seek(float);
 
     // Declared before `card` so it sits *below* it. The control buttons'
     // TouchAreas then take input priority, while clicks anywhere inert
@@ -151,35 +175,86 @@ export component MainWindow inherits Window {
                 clip: true;
                 // Sole stretchy row, so growing the window gives the lyrics
                 // extra height instead of padding the gaps everywhere.
-                // `min-height` covers both rows at their resting positions
-                // (26px apart) plus the current row's own line height.
+                // `min-height` covers a single-line current line plus the next
+                // one below it; a current line that wraps needs more, which the
+                // stretch supplies at anything near the preferred window size.
                 min-height: 60px;
                 vertical-stretch: 1;
+
+                // Invisible ruler, not a third visible row: it holds whichever
+                // text is currently the *current* line, always at the current
+                // line's font size, so its `height` is that line's real wrapped
+                // height and the next row can be parked clear of it.
+                //
+                // Measured here instead of read off `lineA`/`lineB` directly
+                // because the promoted row's `font-size` animates 12px -> 16px
+                // over 260ms: its height — and so the offset — would still be
+                // growing, and the next row, easing toward a moving target,
+                // would lag *above* its true position and cut into the current
+                // line for the length of the transition. The probe reports the
+                // settled height on the very first frame instead.
+                //
+                // `opacity: 0` rather than `visible: false`: the latter is
+                // lowered into a synthetic Clip wrapper, which would change
+                // what this element's `width: 100%` resolves against.
+                current-probe := Text {
+                    text: line-a-role == 0 ? line-a-text : line-b-text;
+                    font-size: LyricStyle.current-size;
+                    wrap: word-wrap;
+                    width: 100%;
+                    y: 0;
+                    opacity: 0;
+                }
 
                 lineA := LyricRow {
                     text: line-a-text;
                     role: line-a-role;
                     instant: line-a-instant;
+                    stack-offset: current-probe.height + LyricStyle.gap;
                 }
                 lineB := LyricRow {
                     text: line-b-text;
                     role: line-b-role;
                     instant: line-b-instant;
+                    stack-offset: current-probe.height + LyricStyle.gap;
                 }
             }
 
+            // The visible track stays thin, but the row it sits in is taller so
+            // there is something to actually hit — a 5px target is a coin flip
+            // with a trackpad, and `seek-touch` fills the whole row.
             Rectangle {
-                height: 5px;
-                background: rgba(255, 255, 255, 0.10);
-                border-radius: 2.5px;
+                height: 14px;
+
+                seek-touch := TouchArea {
+                    enabled: can-seek;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.seek(clamp(seek-touch.mouse-x / seek-touch.width, 0.0, 1.0));
+                    }
+                }
 
                 Rectangle {
-                    x: 0;
-                    y: 0;
-                    height: parent.height;
-                    width: parent.width * progress;
-                    background: @linear-gradient(90deg, #1ed760 0%, #17a34a 100%);
-                    border-radius: 2.5px;
+                    y: (parent.height - self.height) / 2;
+                    // Thickens on hover, which is the only affordance saying the
+                    // bar is interactive at all on a source that allows seeking.
+                    height: seek-touch.has-hover && can-seek ? 7px : 5px;
+                    border-radius: self.height / 2;
+                    background: rgba(255, 255, 255, 0.10);
+
+                    animate height {
+                        duration: 120ms;
+                        easing: ease-out;
+                    }
+
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width * progress;
+                        height: parent.height;
+                        border-radius: parent.border-radius;
+                        background: @linear-gradient(90deg, #1ed760 0%, #17a34a 100%);
+                    }
                 }
             }
 

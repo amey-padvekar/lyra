@@ -108,6 +108,13 @@ impl OverlayWindow {
             .on_skip_previous(move || previous(MediaCommand::Previous));
     }
 
+    /// The progress bar reports a 0.0-1.0 fraction of the track rather than a
+    /// position: turning it into milliseconds needs the duration, which lives
+    /// with the sync engine in `app.rs`.
+    pub fn on_seek(&self, handler: impl Fn(f32) + 'static) {
+        self.window.on_seek(handler);
+    }
+
     /// Not `self.window.run()` — that convenience method is `show()` +
     /// `run_event_loop()` + `hide()`, and `run_event_loop()` quits the whole
     /// event loop the moment the last window becomes invisible. Since the

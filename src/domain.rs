@@ -13,6 +13,10 @@ pub struct NowPlaying {
     pub can_play_pause: bool,
     pub can_next: bool,
     pub can_previous: bool,
+    /// Whether the source honours a jump to an arbitrary position. Kept apart
+    /// from the transport flags above because they don't imply each other: a
+    /// live stream happily accepts next/previous but has nowhere to scrub to.
+    pub can_seek: bool,
 }
 
 impl NowPlaying {

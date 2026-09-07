@@ -12,8 +12,8 @@ fn main() {
     for _ in 0..10 {
         match reader.poll() {
             Ok(Some(np)) => println!(
-                "{} - {} [{}ms / {}ms] playing={}",
-                np.artist, np.title, np.position_ms, np.duration_ms, np.is_playing
+                "{} - {} [{}ms / {}ms] playing={} seekable={}",
+                np.artist, np.title, np.position_ms, np.duration_ms, np.is_playing, np.can_seek
             ),
             Ok(None) => println!("(nothing playing)"),
             Err(e) => println!("poll error: {e:?}"),

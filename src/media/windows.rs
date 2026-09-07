@@ -55,6 +55,7 @@ impl MediaReader for GsmtcReader {
             can_play_pause: controls.IsPlayEnabled()? || controls.IsPauseEnabled()?,
             can_next: controls.IsNextEnabled()?,
             can_previous: controls.IsPreviousEnabled()?,
+            can_seek: controls.IsPlaybackPositionEnabled()?,
         }))
     }
 
@@ -70,6 +71,13 @@ impl MediaReader for GsmtcReader {
             MediaCommand::TogglePlayPause => wait(session.TryTogglePlayPauseAsync()?)?,
             MediaCommand::Next => wait(session.TrySkipNextAsync()?)?,
             MediaCommand::Previous => wait(session.TrySkipPreviousAsync()?)?,
+            // GSMTC wants the target in 100ns ticks — the same unit
+            // `GetTimelineProperties` reports positions in, hence the same
+            // 10_000 factor `poll` divides by.
+            MediaCommand::Seek { position_ms } => {
+                let ticks = (position_ms as i64).saturating_mul(10_000);
+                wait(session.TryChangePlaybackPositionAsync(ticks)?)?
+            }
         };
         if !accepted {
             crate::log!("media: source declined {command:?}");

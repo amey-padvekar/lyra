@@ -13,6 +13,9 @@ pub enum MediaCommand {
     TogglePlayPause,
     Next,
     Previous,
+    /// Jump to an absolute position in the current track. Only sent when the
+    /// source reports `NowPlaying::can_seek`.
+    Seek { position_ms: u64 },
 }
 
 pub trait MediaReader: Send {
