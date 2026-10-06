@@ -190,3 +190,59 @@ reporting bugs because release builds do not keep a console open.
 
 Lyrics are copyrighted, and LRCLIB is a community-run service with a gray legal
 status. This project is intended for personal use only.
+
+<!-- portfolio:start -->
+```portfolio
+title: Lyra
+order: 1
+blurb: Native always-on-top overlay that reads the OS media session and shows time-synced lyrics for whatever is playing.
+tags: [Rust, Slint, GSMTC, LRCLIB]
+meta:
+  - { icon: timer,   label: 1 s poll · per-frame interpolation }
+  - { icon: monitor, label: Windows + macOS backends }
+flow:
+  - { name: read,   cost: gsmtc · media-control, heading: Read, note: A per-OS MediaReader polls the system media session on a worker thread and sends NowPlaying snapshots over a channel. }
+  - { name: fetch,  cost: ureq · disk cache, heading: Fetch, note: On a track change, a background worker checks the disk cache, then LRCLIB (matched on title, artist and duration), with a fallback to lyrics.ovh. }
+  - { name: sync,   cost: pure · no I/O, heading: Sync, note: The sync engine interpolates position between polls, snaps on seeks and eases out drift, then picks the active lyric line. }
+  - { name: render, cost: slint · event loop, heading: Render, note: Updates are sent to the Slint card on the UI thread, so the always-on-top overlay never blocks. }
+```
+
+## Why a sync engine with no I/O
+A media session only reports position about once a second, but a lyric line has to
+change on the exact frame it should. Lyra treats each poll as a timestamped sample and
+estimates position between samples: `position_ms + received_at.elapsed()`, held
+steady while paused. When a new poll arrives, the engine compares it with that
+estimate:
+
+- **Seek**: if they differ by more than 1000 ms, the engine snaps straight to the new
+  position, so the card jumps to the right line instead of scrolling through every
+  line in between.
+- **Drift**: smaller differences are eased out (α = 0.2), so clock jitter between the
+  player and Lyra never makes the text stutter.
+
+The engine has no I/O at all, so its tests pass it an injected clock (`now: Instant`) and
+LRC fixtures, with no player, network or window involved.
+
+```mermaid
+sequenceDiagram
+    participant M as Media reader
+    participant S as Sync engine
+    participant L as Lyrics worker
+    participant U as Slint card
+    M->>S: NowPlaying (title, position, received_at)
+    alt track changed
+        S->>L: request lyrics
+        L-->>S: Vec<LyricLine> (cache or LRCLIB)
+    end
+    loop every frame
+        S->>S: interpolate position
+        S->>U: active line + progress
+    end
+    M->>S: next poll
+    alt |poll − estimate| > 1000 ms
+        S->>S: snap (seek)
+    else
+        S->>S: ease toward poll (drift)
+    end
+```
+<!-- portfolio:end -->
