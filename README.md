@@ -192,20 +192,32 @@ Lyrics are copyrighted, and LRCLIB is a community-run service with a gray legal
 status. This project is intended for personal use only.
 
 <!-- portfolio:start -->
-```portfolio
+<!-- portfolio-data
 title: Lyra
-order: 1
-blurb: Native always-on-top overlay that reads the OS media session and shows time-synced lyrics for whatever is playing.
-tags: [Rust, Slint, GSMTC, LRCLIB]
+order: 4
+blurb: An always-on-top overlay that reads the OS media session and shows time-synced lyrics for whatever is playing. A window you never close has to cost nothing when idle, which is why it's Rust and Slint rather than Electron.
+tags: [Rust, Slint, GSMTC, LRCLIB, in progress]
 meta:
   - { icon: timer,   label: 1 s poll · per-frame interpolation }
   - { icon: monitor, label: Windows + macOS backends }
 flow:
-  - { name: read,   cost: gsmtc · media-control, heading: Read, note: A per-OS MediaReader polls the system media session on a worker thread and sends NowPlaying snapshots over a channel. }
-  - { name: fetch,  cost: ureq · disk cache, heading: Fetch, note: On a track change, a background worker checks the disk cache, then LRCLIB (matched on title, artist and duration), with a fallback to lyrics.ovh. }
-  - { name: sync,   cost: pure · no I/O, heading: Sync, note: The sync engine interpolates position between polls, snaps on seeks and eases out drift, then picks the active lyric line. }
-  - { name: render, cost: slint · event loop, heading: Render, note: Updates are sent to the Slint card on the UI thread, so the always-on-top overlay never blocks. }
-```
+  - name: read
+    cost: gsmtc · now playing
+    heading: Read
+    note: A per-OS MediaReader polls the system media session on a worker thread and sends NowPlaying snapshots over a channel.
+  - name: fetch
+    cost: ureq · disk cache
+    heading: Fetch
+    note: On a track change, a background worker checks the disk cache, then LRCLIB (matched on title, artist and duration), with a fallback to lyrics.ovh.
+  - name: sync
+    cost: pure · no I/O
+    heading: Sync
+    note: The sync engine interpolates position between polls, snaps on seeks and eases out drift, then picks the active lyric line.
+  - name: render
+    cost: slint · event loop
+    heading: Render
+    note: Updates are sent to the Slint card on the UI thread, so the always-on-top overlay never blocks.
+-->
 
 ## Why a sync engine with no I/O
 A media session only reports position about once a second, but a lyric line has to
@@ -232,7 +244,7 @@ sequenceDiagram
     M->>S: NowPlaying (title, position, received_at)
     alt track changed
         S->>L: request lyrics
-        L-->>S: Vec<LyricLine> (cache or LRCLIB)
+        L-->>S: Vec#lt;LyricLine#gt; (cache or LRCLIB)
     end
     loop every frame
         S->>S: interpolate position
